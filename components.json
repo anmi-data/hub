@@ -1,0 +1,5 @@
+{
+  "name": "anmi-hub",
+  "description": "ANMI Hub component collection",
+  "src": "src/components"
+}
