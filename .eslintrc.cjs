@@ -1,5 +1,6 @@
 module.exports = {
   root: true,
+  ignorePatterns: ['dist', 'node_modules', '*.config.js', '*.config.d.ts', '*.tsbuildinfo'],
   parser: '@typescript-eslint/parser',
   parserOptions: {
     ecmaVersion: 2024,
