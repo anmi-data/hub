@@ -10,7 +10,7 @@ export function AlertSection(): JSX.Element {
       <div className="overflow-hidden rounded-[2.25rem] border border-white/10 bg-white/[0.04] shadow-2xl shadow-slate-950/25 backdrop-blur">
         <div className="grid gap-0 lg:grid-cols-[0.95fr_1.05fr]">
           <div className="p-8 sm:p-10 lg:p-12">
-            <SectionLabel>Alerts</SectionLabel>
+            <SectionLabel>Actionable insights</SectionLabel>
             <h2 className="text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">
               Know when something important happens
             </h2>

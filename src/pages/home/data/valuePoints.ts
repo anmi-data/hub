@@ -31,5 +31,9 @@ export const alertsValuePoints: ValuePoint[] = [
   {
     label: "Verification signals",
     value: "Track account syncs, score changes and strategy deviations as fresh evidence enters the due diligence record",
-  }
+  },
+  {
+    label: "Discovered opportunities",
+    value: "Turn fresh signals into promising ideas sooner, with the evidence you need to identify strategies worth a closer look",
+  },
 ];
