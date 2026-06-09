@@ -21,7 +21,7 @@ export function HeroSection(): JSX.Element {
       </p>
       <div className="mt-9 flex flex-col gap-3 sm:flex-row">
         <a
-          href="#strategies"
+          href="/strategies"
           className="inline-flex items-center justify-center rounded-full bg-cyan-200 px-6 py-3 text-sm font-semibold text-slate-950 shadow-xl shadow-cyan-950/25 transition hover:bg-white"
         >
           Explore Strategies

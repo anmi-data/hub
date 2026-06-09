@@ -3,7 +3,7 @@ import type { NavigationItem } from "../types/home";
 import type { SocialLink } from "../types/home";
 
 export const homeNavigation: NavigationItem[] = [
-  { label: "Strategies", href: "#strategies" },
+  { label: "Strategies", href: "/strategies" },
   { label: "Methodology", href: "#methodology" },
   { label: "Alerts", href: "#media" },
 ];
