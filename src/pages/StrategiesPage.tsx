@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, LineChart, Loader2, ShieldCheck, TrendingUp } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle, ChevronDown, Circle, LineChart, Loader2, ShieldCheck, TrendingUp, XCircle } from "lucide-react";
 import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/StrategyTimeSeriesChart";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
@@ -83,10 +83,20 @@ type ExplorerHistoryColumn = {
   type?: string | null;
 };
 
+type ExplorerHistoryPagination = {
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+};
+
 type ExplorerHistory = {
   columns: ExplorerHistoryColumn[];
   rows: Array<Record<string, unknown>>;
-  nextCursor?: string | null;
+  pagination: ExplorerHistoryPagination;
+  search?: string;
 };
 
 type HistoryRecord = Record<string, unknown>;
@@ -129,6 +139,7 @@ type NormalizedChartPoint = {
   value: number | null;
   rawValue: number | null;
   normalizedValue: number | null;
+  raw: unknown;
 };
 
 type NormalizedChartSeries = {
@@ -160,6 +171,8 @@ const DEFAULT_CHART_MODE: ChartMode = "unit_price";
 const DEFAULT_BENCHMARK = "BTC";
 const CHART_MODE_STORAGE_KEY = "anmi-hub:chart-mode:v1";
 const SELECTED_BENCHMARK_STORAGE_KEY = "anmi-hub:selected-benchmark:v1";
+const HISTORY_PAGE_SIZES = [10, 30, 50, 100] as const;
+const DEFAULT_HISTORY_PAGE_SIZE: (typeof HISTORY_PAGE_SIZES)[number] = 50;
 const benchmarkLabelFallbacks: Record<string, string> = {
   BTC: "Bitcoin",
   ETH: "Ethereum",
@@ -169,6 +182,35 @@ const benchmarkLabelFallbacks: Record<string, string> = {
   CL: "WTI Crude Oil",
   NDX: "Nasdaq 100",
 };
+
+function createHistoryPagination(
+  page = 1,
+  pageSize: (typeof HISTORY_PAGE_SIZES)[number] = DEFAULT_HISTORY_PAGE_SIZE,
+  totalRows = 0,
+): ExplorerHistoryPagination {
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.max(1, Math.min(page, totalPages));
+  return {
+    page: safePage,
+    pageSize,
+    totalRows,
+    totalPages,
+    hasNextPage: safePage < totalPages,
+    hasPreviousPage: safePage > 1,
+  };
+}
+
+function createEmptyHistory(
+  page = 1,
+  pageSize: (typeof HISTORY_PAGE_SIZES)[number] = DEFAULT_HISTORY_PAGE_SIZE,
+): ExplorerHistory {
+  return {
+    columns: [],
+    rows: [],
+    pagination: createHistoryPagination(page, pageSize),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -200,6 +242,29 @@ function firstNumber(...values: unknown[]): number | null {
     if (parsed !== undefined) return parsed;
   }
   return null;
+}
+
+function getRecordValue(value: unknown, keys: string[]): unknown {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    if (key in value) return value[key];
+  }
+  return undefined;
+}
+
+function isValidPointStatus(point: unknown): boolean {
+  const status = String(
+    getRecordValue(point, ["status"]) ??
+    getRecordValue(point, ["dataStatus"]) ??
+    getRecordValue(point, ["quality"]) ??
+    getRecordValue(point, ["dataQuality"]) ??
+    getRecordValue(point, ["snapshotStatus"]) ??
+    "",
+  ).toLowerCase();
+
+  if (!status) return true;
+
+  return !["error", "partial", "missing", "failed", "invalid"].includes(status);
 }
 
 function getChartPointValue(
@@ -408,15 +473,25 @@ export function buildExplorerDetailsUrl(apiBaseUrl: string, groupId: string, nod
   return `${apiBaseUrl}/explorer/details?${params.toString()}`;
 }
 
-export function buildExplorerHistoryUrl(apiBaseUrl: string, groupId: string, node: ExplorerNode, dataset: string, limit = 500): string {
+export function buildExplorerHistoryUrl(
+  apiBaseUrl: string,
+  groupId: string,
+  node: ExplorerNode,
+  dataset: string,
+  page: number,
+  pageSize: (typeof HISTORY_PAGE_SIZES)[number],
+  search?: string,
+): string {
   const params = new URLSearchParams();
 
   params.set("type", node.type);
   params.set("id", getEntityId(node));
   params.set("dataset", dataset);
   params.set("groupId", groupId);
-  params.set("limit", String(limit));
+  params.set("page", String(page));
+  params.set("pageSize", String(pageSize));
   params.set("includeRaw", "false");
+  if (search?.trim()) params.set("search", search.trim().slice(0, 200));
 
   if (node.strategyId) params.set("strategyId", node.strategyId);
   if (node.accountId) params.set("accountId", node.accountId);
@@ -516,7 +591,12 @@ function unwrapHistoryPayload(payload: unknown): Record<string, unknown> {
   return isRecord(payload.data) ? payload.data : payload;
 }
 
-function normalizeHistory(payload: unknown): ExplorerHistory {
+function normalizeHistory(
+  payload: unknown,
+  fallbackPage: number,
+  fallbackPageSize: (typeof HISTORY_PAGE_SIZES)[number],
+  fallbackSearch: string,
+): ExplorerHistory {
   const source = unwrapHistoryPayload(payload);
   const rows = (Array.isArray(source.rows) ? source.rows : Array.isArray(source.items) ? source.items : Array.isArray(source.records) ? source.records : Array.isArray(source.history) ? source.history : [])
     .filter(isRecord)
@@ -527,12 +607,34 @@ function normalizeHistory(payload: unknown): ExplorerHistory {
   const rowKeys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   const columns = normalizedColumns.length > 0 ? normalizedColumns : rowKeys.map((key) => ({ key, label: formatMetricLabel(key), type: null }));
   const pagination = isRecord(source.pagination) ? source.pagination : {};
+  const page = firstNumber(pagination.page) ?? fallbackPage;
+  const pageSize = firstNumber(pagination.pageSize, pagination.page_size) ?? fallbackPageSize;
+  const safePageSize = HISTORY_PAGE_SIZES.find((option) => option === pageSize) ?? fallbackPageSize;
+  const totalRows = firstNumber(pagination.totalRows, pagination.total_rows, source.totalRows, source.total) ?? rows.length;
+  const totalPages = firstNumber(pagination.totalPages, pagination.total_pages) ?? Math.max(1, Math.ceil(totalRows / safePageSize));
+  const safePage = Math.max(1, Math.min(page, totalPages));
 
   return {
     columns: orderHistoryColumns(columns),
     rows,
-    nextCursor: asString(pagination.cursor) ?? asString(pagination.nextCursor) ?? asString(source.nextCursor) ?? null,
+    pagination: {
+      page: safePage,
+      pageSize: safePageSize,
+      totalRows,
+      totalPages,
+      hasNextPage: typeof pagination.hasNextPage === "boolean" ? pagination.hasNextPage : safePage < totalPages,
+      hasPreviousPage: typeof pagination.hasPreviousPage === "boolean" ? pagination.hasPreviousPage : safePage > 1,
+    },
+    search: asString(source.search) ?? fallbackSearch,
   };
+}
+
+function formatHistoryRange(page: number, pageSize: number, totalRows: number, search: string): string {
+  const isSearchActive = search.trim().length > 0;
+  if (totalRows === 0) return isSearchActive ? "0 matching records" : "0 records";
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, totalRows);
+  return `${start}-${end} of ${totalRows} ${isSearchActive ? "matching records" : "records"}`;
 }
 
 function formatDate(timestamp: string): string {
@@ -665,6 +767,21 @@ function formatDatasetLabel(value: string): string {
   return labels[value] ?? value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function formatNodeTypeLabel(type: string): string {
+  const normalized = type.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    strategy_group: "Strategy Group",
+    strategy: "Strategy",
+    account: "Account",
+    balance_group: "Balance Group",
+    position_group: "Position Group",
+    lp_position: "LP Position",
+    futures_position: "Futures Position",
+    generic_position: "Generic Position",
+  };
+  return labels[normalized] ?? formatDatasetLabel(type);
+}
+
 function formatMetricLabel(key: string): string {
   const normalized = key.trim().replace(/[\s_-]+/g, "").toLowerCase();
   const labels: Record<string, string> = {
@@ -677,11 +794,73 @@ function formatMetricLabel(key: string): string {
   return labels[normalized] ?? formatDatasetLabel(key);
 }
 
+function isTimestampField(key: string): boolean {
+  const normalized = key.trim().replace(/[\s-]+/g, "_").toLowerCase();
+  return ["timestamp", "created_at", "updated_at", "snapshot_at", "time", "date"].includes(normalized);
+}
+
+function isStatusField(key: string): boolean {
+  return key.trim().toLowerCase() === "status";
+}
+
+function isMessageField(key: string): boolean {
+  const normalized = key.trim().replace(/[\s_-]+/g, "").toLowerCase();
+  return [
+    "error",
+    "errormessage",
+    "message",
+    "warning",
+    "warningmessage",
+    "reason",
+    "statusmessage",
+  ].includes(normalized);
+}
+
+function getRowStatus(row: HistoryRecord): string | null {
+  return asString(row.status) ?? asString(row.dataStatus) ?? asString(row.quality) ?? asString(row.dataQuality) ?? asString(row.snapshotStatus) ?? null;
+}
+
+function getRowMessage(row: HistoryRecord): string | null {
+  for (const key of ["error", "errorMessage", "error_message", "message", "warning", "warningMessage", "reason", "statusMessage", "status_message"]) {
+    const value = row[key];
+    const formatted = typeof value === "string" ? value.trim() : value === null || value === undefined ? "" : formatValue(value);
+    if (formatted) return formatted;
+  }
+  return null;
+}
+
+function getStatusTone(status: string | null | undefined): "good" | "warning" | "risk" | "default" {
+  const normalized = String(status ?? "").toLowerCase();
+  if (["complete", "success", "ok"].includes(normalized)) return "good";
+  if (["partial", "warning", "stale"].includes(normalized)) return "warning";
+  if (["error", "failed", "invalid", "missing"].includes(normalized)) return "risk";
+  return "default";
+}
+
+function formatDateTime(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function orderHistoryColumns(columns: ExplorerHistoryColumn[]): ExplorerHistoryColumn[] {
-  const timestampIndex = columns.findIndex((column) => ["timestamp", "snapshot_at", "created_at", "updated_at", "time", "date"].includes(column.key));
-  if (timestampIndex < 0) return columns.slice(0, 12);
-  const timestampColumn = columns[timestampIndex];
-  return [timestampColumn, ...columns.filter((_, index) => index !== timestampIndex)].slice(0, 12);
+  const visibleColumns = columns.filter((column) => !isStatusField(column.key) && !isMessageField(column.key));
+  const timestampIndex = visibleColumns.findIndex((column) => isTimestampField(column.key));
+  if (timestampIndex < 0) return visibleColumns.slice(0, 12);
+  const timestampColumn = visibleColumns[timestampIndex];
+  const metricKeys = new Set(["nav", "nav_usd", "navUsd", "unit_price", "unitPrice", "units"]);
+  const rest = visibleColumns.filter((_, index) => index !== timestampIndex);
+  const metrics = rest.filter((column) => metricKeys.has(column.key));
+  const others = rest.filter((column) => !metricKeys.has(column.key));
+  return [timestampColumn, ...metrics, ...others].slice(0, 12);
 }
 
 function formatDateTimeOrNA(value: string | null | undefined): string {
@@ -820,6 +999,7 @@ function normalizeChartPoint(item: unknown, chartMode: ChartMode, seriesType: "p
     value,
     rawValue,
     normalizedValue,
+    raw: item,
   };
 }
 
@@ -884,6 +1064,7 @@ function normalizeBenchmarkHistoryPoint(item: unknown): NormalizedChartPoint | u
     value,
     rawValue,
     normalizedValue,
+    raw: item,
   };
 }
 
@@ -931,6 +1112,7 @@ function toVisibleSeriesPoints(series?: NormalizedChartSeries, requirePositive =
   const pointsByTime = new Map<number, VisibleSeriesPoint>();
 
   series?.points.forEach((point) => {
+    if (!isValidPointStatus(point.raw)) return;
     const time = toUnixTimeSeconds(point.timestamp);
     const value = getDisplayPointValue(point);
     if (time === null || typeof value !== "number" || !Number.isFinite(value)) return;
@@ -971,6 +1153,7 @@ function createSeriesFromChartViewData(label: string, data: Array<{ time: number
       value: point.value,
       rawValue: point.value,
       normalizedValue: null,
+      raw: point,
     })),
   };
 }
@@ -986,13 +1169,26 @@ function buildChartView({
   selectedBenchmark: string | null;
   benchmarkCache: BenchmarkCache;
 }): ChartView {
+  const rawPrimaryPoints = primarySeries?.points ?? [];
+
   if (chartMode === "nav_usd") {
+    const primaryData = toVisibleSeriesPoints(primarySeries);
+    if (import.meta.env.DEV) {
+      console.debug("Chart normalized data", {
+        mode: chartMode,
+        rawPrimaryPoints: rawPrimaryPoints.length,
+        validPrimaryPoints: primaryData.length,
+        benchmarkPoints: 0,
+        firstPrimary: primaryData[0],
+        lastPrimary: primaryData[primaryData.length - 1],
+      });
+    }
     return {
       mode: "aum",
       title: "AUM",
       subtitle: "Total value of assets under management.",
       primaryLabel: "AUM",
-      primaryData: toChartViewData(toVisibleSeriesPoints(primarySeries)),
+      primaryData: toChartViewData(primaryData),
       benchmarkData: [],
       valueMode: "usd",
     };
@@ -1000,6 +1196,16 @@ function buildChartView({
 
   const primaryPoints = toVisibleSeriesPoints(primarySeries, true);
   if (!selectedBenchmark) {
+    if (import.meta.env.DEV) {
+      console.debug("Chart normalized data", {
+        mode: chartMode,
+        rawPrimaryPoints: rawPrimaryPoints.length,
+        validPrimaryPoints: primaryPoints.length,
+        benchmarkPoints: 0,
+        firstPrimary: primaryPoints[0],
+        lastPrimary: primaryPoints[primaryPoints.length - 1],
+      });
+    }
     return {
       mode: "unit_price",
       title: "Unit Price",
@@ -1017,6 +1223,17 @@ function buildChartView({
     : [];
   const primaryData = toChartViewData(reindexVisibleSeriesPoints(primaryPoints));
   const benchmarkData = toChartViewData(reindexVisibleSeriesPoints(benchmarkPoints));
+
+  if (import.meta.env.DEV) {
+    console.debug("Chart normalized data", {
+      mode: chartMode,
+      rawPrimaryPoints: rawPrimaryPoints.length,
+      validPrimaryPoints: primaryPoints.length,
+      benchmarkPoints: benchmarkData.length,
+      firstPrimary: primaryPoints[0],
+      lastPrimary: primaryPoints[primaryPoints.length - 1],
+    });
+  }
 
   return {
     mode: "unit_price",
@@ -1105,9 +1322,12 @@ export function StrategiesPage(): JSX.Element {
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [nodeDetails, setNodeDetails] = useState<ExplorerDetails | null>(null);
-  const [historyData, setHistoryData] = useState<ExplorerHistory>({ columns: [], rows: [] });
+  const [historyData, setHistoryData] = useState<ExplorerHistory>(() => createEmptyHistory());
   const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
+  const [historySearchInput, setHistorySearchInput] = useState("");
   const [historySearch, setHistorySearch] = useState("");
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState<(typeof HISTORY_PAGE_SIZES)[number]>(DEFAULT_HISTORY_PAGE_SIZE);
   const [isLoadingStrategies, setIsLoadingStrategies] = useState(true);
   const [isLoadingBenchmarks, setIsLoadingBenchmarks] = useState(true);
   const [isLoadingHeader, setIsLoadingHeader] = useState(false);
@@ -1210,11 +1430,16 @@ export function StrategiesPage(): JSX.Element {
       strategy.id.toLowerCase().includes(query)
     ));
   }, [strategies, strategySearch]);
-  const filteredHistoryRows = useMemo(() => {
-    const query = historySearch.trim().toLowerCase();
-    if (!query) return historyData.rows;
-    return historyData.rows.filter((row) => Object.values(row).some((value) => formatValue(value).toLowerCase().includes(query)));
-  }, [historyData.rows, historySearch]);
+  const historyPagination = historyData.pagination;
+  const totalHistoryPages = Math.max(1, historyPagination.totalPages);
+  const safeHistoryPage = Math.max(1, Math.min(historyPagination.page, totalHistoryPages));
+  const hasHistoryMessageColumn = historyData.rows.some((row) => getRowMessage(row) !== null);
+  const historyRangeLabel = formatHistoryRange(
+    safeHistoryPage,
+    historyPagination.pageSize,
+    historyPagination.totalRows,
+    historySearch,
+  );
   const primaryMetrics = useMemo((): Metric[] => {
     if (isLoadingHeader) {
       return [
@@ -1255,6 +1480,26 @@ export function StrategiesPage(): JSX.Element {
 
     return metrics;
   }, [headerStrategy, isLoadingHeader, selectedStrategy]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyPageSize, historySearch, selectedDataset, selectedNodeKey]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setHistorySearch(historySearchInput.trim().slice(0, 200));
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [historySearchInput]);
+
+  useEffect(() => {
+    if (historyPage > totalHistoryPages) {
+      setHistoryPage(totalHistoryPages);
+    }
+  }, [historyPage, totalHistoryPages]);
 
   useEffect(() => {
     if (!isLoadingStrategies && !strategyId && selectedStrategy) {
@@ -1430,7 +1675,7 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode) {
       setNodeDetails(null);
-      setHistoryData({ columns: [], rows: [] });
+      setHistoryData(createEmptyHistory(historyPage, historyPageSize));
       setSelectedDataset(null);
       return;
     }
@@ -1440,7 +1685,7 @@ export function StrategiesPage(): JSX.Element {
     setDetailsError(null);
     setHistoryError(null);
     setNodeDetails(null);
-    setHistoryData({ columns: [], rows: [] });
+    setHistoryData(createEmptyHistory(1, historyPageSize));
     setSelectedDataset(null);
     const detailsUrl = buildExplorerDetailsUrl("/api/v1", selectedStrategy.id, selectedTreeNode);
     if (import.meta.env.DEV) {
@@ -1478,8 +1723,15 @@ export function StrategiesPage(): JSX.Element {
     let active = true;
     setIsLoadingHistory(true);
     setHistoryError(null);
-    setHistoryData({ columns: [], rows: [] });
-    const historyUrl = buildExplorerHistoryUrl("/api/v1", selectedStrategy.id, selectedTreeNode, selectedDataset, 500);
+    const historyUrl = buildExplorerHistoryUrl(
+      "/api/v1",
+      selectedStrategy.id,
+      selectedTreeNode,
+      selectedDataset,
+      historyPage,
+      historyPageSize,
+      historySearch,
+    );
     if (import.meta.env.DEV) {
       console.debug("Explorer history URL", historyUrl);
     }
@@ -1489,11 +1741,11 @@ export function StrategiesPage(): JSX.Element {
         if (import.meta.env.DEV) {
           console.debug("Explorer history raw response", payload);
         }
-        setHistoryData(normalizeHistory(payload));
+        setHistoryData(normalizeHistory(payload, historyPage, historyPageSize, historySearch));
       })
       .catch(() => {
         if (active) {
-          setHistoryData({ columns: [], rows: [] });
+          setHistoryData(createEmptyHistory(historyPage, historyPageSize));
           setHistoryError("Unable to load explorer history.");
         }
       })
@@ -1504,7 +1756,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [selectedDataset, selectedStrategy, selectedTreeNode]);
+  }, [historyPage, historyPageSize, historySearch, selectedDataset, selectedStrategy, selectedTreeNode]);
 
   const analytics = useMemo(() => {
     const metric = chartMode === "nav_usd" ? "nav_usd" : "unit_price";
@@ -1569,6 +1821,30 @@ export function StrategiesPage(): JSX.Element {
     setSelectedBenchmark(nextBenchmark);
     persistSelectedBenchmark(nextBenchmark);
     setIsBenchmarkMenuOpen(false);
+  }
+
+  function handleHistoryPageChange(nextPage: number): void {
+    setHistoryPage(Math.max(1, Math.min(totalHistoryPages, nextPage)));
+  }
+
+  function handleHistoryPageSizeChange(nextPageSize: (typeof HISTORY_PAGE_SIZES)[number]): void {
+    setHistoryPageSize(nextPageSize);
+    setHistoryPage(1);
+  }
+
+  function handleHistorySearchInputChange(value: string): void {
+    setHistorySearchInput(value);
+    setHistoryPage(1);
+  }
+
+  function handleDatasetChange(dataset: string): void {
+    setSelectedDataset(dataset);
+    setHistoryPage(1);
+  }
+
+  function handleExplorerNodeChange(nodeId: string): void {
+    setSelectedNodeKey(nodeId);
+    setHistoryPage(1);
   }
 
   return (
@@ -1783,20 +2059,28 @@ export function StrategiesPage(): JSX.Element {
           detailsError={detailsError}
           historyColumns={historyData.columns}
           historyError={historyError}
-          historyRows={filteredHistoryRows}
-          historySearch={historySearch}
+          historyPage={safeHistoryPage}
+          historyPageSize={historyPageSize}
+          historyRangeLabel={historyRangeLabel}
+          historyRows={historyData.rows}
+          historySearch={historySearchInput}
+          hasHistoryMessageColumn={hasHistoryMessageColumn}
           isLoadingDetails={isLoadingDetails}
           isLoadingHistory={isLoadingHistory}
           isLoadingTree={isLoadingTree}
+          hasNextHistoryPage={historyPagination.hasNextPage}
+          hasPreviousHistoryPage={historyPagination.hasPreviousPage}
           nodes={treeNodes}
           selectedNodeKey={selectedNodeKey}
           selectedNode={selectedTreeNode}
           selectedDataset={selectedDataset}
           treeError={treeError}
-          totalHistoryRows={historyData.rows.length}
-          onDatasetChange={setSelectedDataset}
-          onHistorySearchChange={setHistorySearch}
-          onSelectNode={setSelectedNodeKey}
+          totalHistoryPages={totalHistoryPages}
+          onDatasetChange={handleDatasetChange}
+          onHistorySearchInputChange={handleHistorySearchInputChange}
+          onHistoryPageChange={handleHistoryPageChange}
+          onHistoryPageSizeChange={handleHistoryPageSizeChange}
+          onSelectNode={handleExplorerNodeChange}
         />
       </section>
     </main>
@@ -1817,8 +2101,14 @@ function DataExplorer({
   detailsError,
   historyColumns,
   historyError,
+  historyPage,
+  historyPageSize,
+  historyRangeLabel,
   historyRows,
   historySearch,
+  hasHistoryMessageColumn,
+  hasNextHistoryPage,
+  hasPreviousHistoryPage,
   isLoadingDetails,
   isLoadingHistory,
   isLoadingTree,
@@ -1826,18 +2116,26 @@ function DataExplorer({
   selectedDataset,
   selectedNode,
   selectedNodeKey,
-  totalHistoryRows,
+  totalHistoryPages,
   treeError,
   onDatasetChange,
-  onHistorySearchChange,
+  onHistorySearchInputChange,
+  onHistoryPageChange,
+  onHistoryPageSizeChange,
   onSelectNode,
 }: {
   details: ExplorerDetails | null;
   detailsError: string | null;
   historyColumns: ExplorerHistoryColumn[];
   historyError: string | null;
+  historyPage: number;
+  historyPageSize: (typeof HISTORY_PAGE_SIZES)[number];
+  historyRangeLabel: string;
   historyRows: HistoryRecord[];
   historySearch: string;
+  hasHistoryMessageColumn: boolean;
+  hasNextHistoryPage: boolean;
+  hasPreviousHistoryPage: boolean;
   isLoadingDetails: boolean;
   isLoadingHistory: boolean;
   isLoadingTree: boolean;
@@ -1845,13 +2143,17 @@ function DataExplorer({
   selectedDataset: string | null;
   selectedNode?: ExplorerTreeNode;
   selectedNodeKey: string | null;
-  totalHistoryRows: number;
+  totalHistoryPages: number;
   treeError: string | null;
   onDatasetChange: (dataset: string) => void;
-  onHistorySearchChange: (value: string) => void;
+  onHistorySearchInputChange: (value: string) => void;
+  onHistoryPageChange: (page: number) => void;
+  onHistoryPageSizeChange: (pageSize: (typeof HISTORY_PAGE_SIZES)[number]) => void;
   onSelectNode: (nodeId: string) => void;
 }): JSX.Element {
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
+  const canGoBack = hasPreviousHistoryPage;
+  const canGoForward = hasNextHistoryPage;
 
   return (
     <section className="mt-6 rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
@@ -1860,7 +2162,7 @@ function DataExplorer({
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Data Explorer</div>
           <p className="mt-2 text-sm text-slate-500">Verified hierarchy, node details and latest history records for the selected strategy group.</p>
         </div>
-        <div className="text-xs text-slate-500">{totalHistoryRows} latest records</div>
+        <div className="text-xs text-slate-500">{historyRangeLabel}</div>
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -1884,7 +2186,9 @@ function DataExplorer({
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="text-lg font-semibold text-white">{details?.title ?? selectedNode?.label ?? "Select a node"}</div>
-                    <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">{details?.type ?? selectedNode?.type ?? "No node selected"}{details?.status ? ` / ${details.status}` : ""}</div>
+                    <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">
+                      {formatNodeTypeLabel(details?.type ?? selectedNode?.type ?? "No node selected")}
+                    </div>
                     {details?.subtitle ? <div className="mt-1 text-xs text-slate-500">{details.subtitle}</div> : null}
                   </div>
                 </div>
@@ -1909,12 +2213,12 @@ function DataExplorer({
               </div>
               <input
                 value={historySearch}
-                onChange={(event) => onHistorySearchChange(event.target.value)}
+                onChange={(event) => onHistorySearchInputChange(event.target.value)}
                 placeholder="Search history..."
                 className="h-10 rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40 md:w-72"
               />
             </div>
-            {details?.datasets.length ? (
+            {details && details.datasets.length > 1 ? (
               <div className="mb-4 flex flex-wrap gap-2">
                 {details.datasets.map((dataset) => (
                   <button
@@ -1933,10 +2237,47 @@ function DataExplorer({
                 ))}
               </div>
             ) : null}
+            <div className="mb-3 flex flex-col justify-between gap-3 text-xs text-slate-500 sm:flex-row sm:items-center">
+              <div>{historyRangeLabel}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span>Rows</span>
+                <select
+                  value={historyPageSize}
+                  onChange={(event) => {
+                    const nextPageSize = HISTORY_PAGE_SIZES.find((pageSize) => pageSize === Number(event.target.value));
+                    if (nextPageSize) onHistoryPageSizeChange(nextPageSize);
+                  }}
+                  className="h-8 rounded-lg border border-white/10 bg-slate-950 px-2 text-xs text-slate-200 outline-none focus:border-cyan-300/40"
+                >
+                  {HISTORY_PAGE_SIZES.map((pageSize) => (
+                    <option key={pageSize} value={pageSize}>{pageSize}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={!canGoBack}
+                  onClick={() => onHistoryPageChange(Math.max(1, historyPage - 1))}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-slate-300 transition hover:border-cyan-300/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Previous history page"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                </button>
+                <span className="tabular-nums">{historyPage} / {totalHistoryPages}</span>
+                <button
+                  type="button"
+                  disabled={!canGoForward}
+                  onClick={() => onHistoryPageChange(historyPage + 1)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-slate-300 transition hover:border-cyan-300/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Next history page"
+                >
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
             {isLoadingHistory ? <div className="text-sm text-slate-500">Loading history...</div> : null}
             {historyError ? <div className="text-sm text-amber-100">{historyError}</div> : null}
             {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}.</div> : null}
-            {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} /> : null}
+            {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} showMessageColumn={hasHistoryMessageColumn} /> : null}
           </div>
         </div>
       </div>
@@ -1969,7 +2310,7 @@ function TreeNodeButton({
       >
         <span className="min-w-0">
           <span className="block truncate font-medium">{node.label}</span>
-          <span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-slate-500">{node.type}{node.status ? ` / ${node.status}` : ""}</span>
+          <span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-slate-500">{formatNodeTypeLabel(node.type)}</span>
         </span>
         {node.count !== undefined ? <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-slate-400">{node.count}</span> : null}
       </button>
@@ -1980,21 +2321,85 @@ function TreeNodeButton({
   );
 }
 
-function HistoryTable({ rows, columns }: { rows: HistoryRecord[]; columns: ExplorerHistoryColumn[] }): JSX.Element {
+function StatusIcon({ status }: { status: string | null }): JSX.Element {
+  const tone = getStatusTone(status);
+  const className = cn(
+    "h-4 w-4",
+    tone === "good" ? "text-emerald-300" : null,
+    tone === "warning" ? "text-amber-300" : null,
+    tone === "risk" ? "text-rose-300" : null,
+    tone === "default" ? "text-slate-500" : null,
+  );
+
+  if (tone === "good") return <CheckCircle className={className} aria-label={status ?? "OK"} />;
+  if (tone === "warning") return <AlertTriangle className={className} aria-label={status ?? "Warning"} />;
+  if (tone === "risk") return <XCircle className={className} aria-label={status ?? "Error"} />;
+  return <Circle className={className} aria-label={status ?? "Unknown"} />;
+}
+
+function formatHistoryCell(column: ExplorerHistoryColumn, row: HistoryRecord): string {
+  if (isTimestampField(column.key)) return formatDateTime(row[column.key]);
+  return formatFieldValue(column.key, row[column.key]);
+}
+
+function HistoryTable({
+  rows,
+  columns,
+  showMessageColumn,
+}: {
+  rows: HistoryRecord[];
+  columns: ExplorerHistoryColumn[];
+  showMessageColumn: boolean;
+}): JSX.Element {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <thead>
           <tr className="border-y border-white/10 text-left text-[10px] uppercase tracking-[0.14em] text-slate-500">
+            <th className="w-10 px-3 py-3 font-medium">Status</th>
             {columns.map((column) => <th key={column.key} className="px-3 py-3 font-medium">{column.label}</th>)}
+            {showMessageColumn ? <th className="px-3 py-3 font-medium">Message</th> : null}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => (
-            <tr key={index} className="border-b border-white/[0.06] text-slate-300 hover:bg-white/[0.025]">
-              {columns.map((column) => <td key={column.key} className="max-w-[220px] truncate px-3 py-3">{formatFieldValue(column.key, row[column.key])}</td>)}
-            </tr>
-          ))}
+          {rows.map((row, index) => {
+            const status = getRowStatus(row);
+            const message = getRowMessage(row);
+            const tone = getStatusTone(status);
+            return (
+              <tr key={index} className="border-b border-white/[0.06] text-slate-300 hover:bg-white/[0.025]">
+                <td className="px-3 py-3" title={status ?? "Unknown"}>
+                  <StatusIcon status={status} />
+                </td>
+                {columns.map((column) => (
+                  <td
+                    key={column.key}
+                    className={cn(
+                      "max-w-[220px] truncate px-3 py-3",
+                      isTimestampField(column.key) ? "tabular-nums text-slate-200" : null,
+                      ["nav", "nav_usd", "navUsd", "unit_price", "unitPrice", "units"].includes(column.key) ? "tabular-nums text-slate-100" : null,
+                    )}
+                    title={formatHistoryCell(column, row)}
+                  >
+                    {formatHistoryCell(column, row)}
+                  </td>
+                ))}
+                {showMessageColumn ? (
+                  <td
+                    className={cn(
+                      "max-w-[280px] truncate px-3 py-3",
+                      tone === "risk" ? "text-rose-200" : null,
+                      tone === "warning" ? "text-amber-100" : null,
+                      tone === "good" ? "text-slate-400" : null,
+                    )}
+                    title={message ?? ""}
+                  >
+                    {message ?? "N/A"}
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
