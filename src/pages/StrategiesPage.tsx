@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, LineChart, Loader2, ShieldCheck, TrendingUp } from "lucide-react";
-import { StrategyTimeSeriesChart } from "../components/charts/StrategyTimeSeriesChart";
+import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/StrategyTimeSeriesChart";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
 
@@ -49,9 +49,11 @@ type ExplorerNode = {
   strategyId?: string;
   accountId?: string;
   protocolType?: string;
+  meta?: Record<string, unknown>;
 };
 
 type ExplorerTreeNode = ExplorerNode & {
+  uiKey: string;
   label: string;
   count?: number | null;
   status?: string | null;
@@ -61,12 +63,33 @@ type ExplorerTreeNode = ExplorerNode & {
 
 type ExplorerDetails = {
   title: string;
-  type?: string | null;
+  subtitle?: string | null;
+  type: string;
   status?: string | null;
-  summary: Array<{ label: string; value: string }>;
+  summaryCards: Array<{ label: string; value: string; tone?: "default" | "good" | "warning" | "risk" }>;
+  latest?: Record<string, unknown> | null;
+  datasets: HistoryDataset[];
 };
 
-type HistoryRecord = Record<string, string | number | boolean | null>;
+type HistoryDataset = {
+  id: string;
+  label: string;
+  count?: number | null;
+};
+
+type ExplorerHistoryColumn = {
+  key: string;
+  label: string;
+  type?: string | null;
+};
+
+type ExplorerHistory = {
+  columns: ExplorerHistoryColumn[];
+  rows: Array<Record<string, unknown>>;
+  nextCursor?: string | null;
+};
+
+type HistoryRecord = Record<string, unknown>;
 
 type ChartMode = "nav_usd" | "unit_price";
 type ApiStatus = "ok" | "nok";
@@ -86,6 +109,7 @@ type ApiChartSeriesPoint = {
 };
 
 type BenchmarkCache = Record<string, NormalizedChartSeries>;
+type PrimaryChartCache = Record<string, NormalizedChartSeries>;
 
 type ApiChartSeries = {
   id?: string;
@@ -115,12 +139,6 @@ type NormalizedChartSeries = {
   symbol?: string;
   points: NormalizedChartPoint[];
   warnings: string[];
-};
-
-type ChartRow = {
-  timestamp: string;
-  primary?: number;
-  benchmark?: number;
 };
 
 type TimePoint = {
@@ -289,19 +307,22 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
   return normalized;
 }
 
-function normalizeTreeNode(item: unknown, fallbackId: string): ExplorerTreeNode | undefined {
+function normalizeTreeNode(item: unknown, parentPath: string, index = 0): ExplorerTreeNode | undefined {
   if (!isRecord(item)) return undefined;
-  const id = asString(item.id) ?? asString(item.nodeId) ?? asString(item.key) ?? fallbackId;
+  const id = asString(item.id) ?? asString(item.nodeId) ?? asString(item.key) ?? `node-${index}`;
   const type = asString(item.type) ?? asString(item.nodeType) ?? "node";
   const label = asString(item.label) ?? asString(item.name) ?? id;
-  const entityId = asString(item.entityId) ?? asString(item.entity_id) ?? asString(item.businessId) ?? asString(item.business_id);
-  const strategyId = asString(item.strategyId) ?? asString(item.strategy_id);
-  const accountId = asString(item.accountId) ?? asString(item.account_id);
-  const protocolType = asString(item.protocolType) ?? asString(item.protocol_type) ?? asString(item.protocol);
+  const pathPart = `${type}:${id}:${label}:${index}`;
+  const uiKey = parentPath ? `${parentPath}/${pathPart}` : pathPart;
+  const meta = isRecord(item.meta) ? item.meta : {};
+  const entityId = asString(item.entityId) ?? asString(item.entity_id) ?? asString(item.businessId) ?? asString(item.business_id) ?? asString(meta.entityId) ?? asString(meta.entity_id);
+  const strategyId = asString(item.strategyId) ?? asString(item.strategy_id) ?? asString(meta.strategyId) ?? asString(meta.strategy_id);
+  const accountId = asString(item.accountId) ?? asString(item.account_id) ?? asString(meta.accountId) ?? asString(meta.account_id);
+  const protocolType = asString(item.protocolType) ?? asString(item.protocol_type) ?? asString(item.protocol) ?? asString(meta.protocolType) ?? asString(meta.protocol_type) ?? asString(meta.protocol);
   const children = asArray(item.children)
-    .map((child, index) => normalizeTreeNode(child, `${id}-${index}`))
+    .map((child, childIndex) => normalizeTreeNode(child, uiKey, childIndex))
     .filter((node): node is ExplorerTreeNode => Boolean(node));
-  const node: ExplorerTreeNode = { id, type, label };
+  const node: ExplorerTreeNode = { id, type, label, uiKey };
   const count = firstNumber(item.count, item.rows, item.total);
   const status = asString(item.status);
   const updatedAt = asString(item.updatedAt) ?? asString(item.updated_at) ?? asString(item.timestamp);
@@ -312,28 +333,29 @@ function normalizeTreeNode(item: unknown, fallbackId: string): ExplorerTreeNode 
   if (strategyId) node.strategyId = strategyId;
   if (accountId) node.accountId = accountId;
   if (protocolType) node.protocolType = protocolType.toLowerCase();
+  if (Object.keys(meta).length > 0) node.meta = meta;
   if (children.length > 0) node.children = children;
   return node;
 }
 
 function normalizeTree(payload: unknown): ExplorerTreeNode[] {
   if (isRecord(payload) && isRecord(payload.root)) {
-    const root = normalizeTreeNode(payload.root, "root");
+    const root = normalizeTreeNode(payload.root, "", 0);
     return root ? [root] : [];
   }
   const nodes = asArray(payload);
   if (nodes.length > 0) {
-    return nodes.map((item, index) => normalizeTreeNode(item, `node-${index}`)).filter((node): node is ExplorerTreeNode => Boolean(node));
+    return nodes.map((item, index) => normalizeTreeNode(item, "", index)).filter((node): node is ExplorerTreeNode => Boolean(node));
   }
-  const single = normalizeTreeNode(payload, "root");
+  const single = normalizeTreeNode(payload, "", 0);
   return single ? [single] : [];
 }
 
-function findTreeNode(nodes: ExplorerTreeNode[], nodeId: string | null): ExplorerTreeNode | undefined {
-  if (!nodeId) return undefined;
+function findTreeNode(nodes: ExplorerTreeNode[], uiKey: string | null): ExplorerTreeNode | undefined {
+  if (!uiKey) return undefined;
   for (const node of nodes) {
-    if (node.id === nodeId) return node;
-    const child = findTreeNode(node.children ?? [], nodeId);
+    if (node.uiKey === uiKey) return node;
+    const child = findTreeNode(node.children ?? [], uiKey);
     if (child) return child;
   }
   return undefined;
@@ -350,7 +372,7 @@ function getEntityId(node: ExplorerNode): string {
   return separatorIndex >= 0 ? node.id.slice(separatorIndex + 1) : node.id;
 }
 
-function getDefaultDataset(node: ExplorerNode): string {
+function getDefaultDatasetForNode(node: ExplorerNode): string {
   switch (node.type) {
     case "strategy_group":
     case "strategy":
@@ -363,6 +385,7 @@ function getDefaultDataset(node: ExplorerNode): string {
     case "position_group":
       if (node.protocolType === "lp") return "positions_lp";
       if (node.protocolType === "futures" || node.protocolType === "perp") return "positions_futures";
+      if (node.protocolType === "hedge") return "hedge";
       return "positions_generic";
 
     default:
@@ -376,6 +399,7 @@ export function buildExplorerDetailsUrl(apiBaseUrl: string, groupId: string, nod
   params.set("type", node.type);
   params.set("id", getEntityId(node));
   params.set("groupId", groupId);
+  params.set("includeRaw", "false");
 
   if (node.strategyId) params.set("strategyId", node.strategyId);
   if (node.accountId) params.set("accountId", node.accountId);
@@ -384,14 +408,15 @@ export function buildExplorerDetailsUrl(apiBaseUrl: string, groupId: string, nod
   return `${apiBaseUrl}/explorer/details?${params.toString()}`;
 }
 
-export function buildExplorerHistoryUrl(apiBaseUrl: string, groupId: string, node: ExplorerNode, limit = 50): string {
+export function buildExplorerHistoryUrl(apiBaseUrl: string, groupId: string, node: ExplorerNode, dataset: string, limit = 500): string {
   const params = new URLSearchParams();
 
   params.set("type", node.type);
   params.set("id", getEntityId(node));
-  params.set("dataset", getDefaultDataset(node));
+  params.set("dataset", dataset);
   params.set("groupId", groupId);
   params.set("limit", String(limit));
+  params.set("includeRaw", "false");
 
   if (node.strategyId) params.set("strategyId", node.strategyId);
   if (node.accountId) params.set("accountId", node.accountId);
@@ -400,39 +425,114 @@ export function buildExplorerHistoryUrl(apiBaseUrl: string, groupId: string, nod
   return `${apiBaseUrl}/explorer/history?${params.toString()}`;
 }
 
-function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDetails {
-  const source = isRecord(payload) ? payload : {};
-  const rawSummary = Array.isArray(source.summary) ? source.summary : Array.isArray(source.cards) ? source.cards : [];
-  const summary = rawSummary
-    .map((item): { label: string; value: string } | undefined => {
-      if (!isRecord(item)) return undefined;
-      const label = asString(item.label) ?? asString(item.name) ?? asString(item.key);
-      if (!label) return undefined;
-      const rawValue = item.value ?? item.count ?? item.amount;
-      return { label, value: formatValue(rawValue) };
-    })
-    .filter((item): item is { label: string; value: string } => Boolean(item));
+function unwrapDetailsPayload(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload)) return {};
+  if (isRecord(payload.details)) return payload.details;
+  if (isRecord(payload.data)) {
+    if (isRecord(payload.data.details)) return payload.data.details;
+    return payload.data;
+  }
+  return payload;
+}
+
+function normalizeDatasetItem(item: unknown): HistoryDataset | undefined {
+  if (typeof item === "string") return { id: item, label: formatDatasetLabel(item) };
+  if (!isRecord(item)) return undefined;
+  const id = asString(item.id) ?? asString(item.key) ?? asString(item.dataset) ?? asString(item.name);
+  if (!id) return undefined;
   return {
-    title: asString(source.title) ?? asString(source.label) ?? node?.label ?? "Node details",
-    type: asString(source.type) ?? node?.type ?? null,
-    status: asString(source.status) ?? node?.status ?? null,
-    summary,
+    id,
+    label: formatDatasetLabel(asString(item.label) ?? id),
+    count: firstNumber(item.count, item.rows, item.total),
   };
 }
 
-function normalizeHistory(payload: unknown): HistoryRecord[] {
-  return asArray(payload)
+function normalizeDatasets(source: Record<string, unknown>, node?: ExplorerTreeNode): HistoryDataset[] {
+  const history = isRecord(source.history) ? source.history : {};
+  const data = isRecord(source.data) ? source.data : {};
+  const candidates = [source.datasets, source.historyDatasets, source.availableDatasets, history.datasets, data.datasets];
+  const rawDatasets = candidates.find(Array.isArray);
+  const datasets = (Array.isArray(rawDatasets) ? rawDatasets : [])
+    .map(normalizeDatasetItem)
+    .filter((item): item is HistoryDataset => Boolean(item));
+  if (datasets.length > 0) return datasets;
+  const fallbackId = node ? getDefaultDatasetForNode(node) : "snapshots";
+  return [{ id: fallbackId, label: formatDatasetLabel(fallbackId) }];
+}
+
+function normalizeSummaryCards(value: unknown): ExplorerDetails["summaryCards"] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item): ExplorerDetails["summaryCards"][number] | undefined => {
+        if (!isRecord(item)) return undefined;
+        const label = asString(item.label) ?? asString(item.name) ?? asString(item.key);
+        if (!label) return undefined;
+        const rawValue = item.value ?? item.count ?? item.amount;
+        return {
+          label: formatMetricLabel(label),
+          value: formatFieldValue(label, rawValue),
+          tone: asString(item.tone) as ExplorerDetails["summaryCards"][number]["tone"],
+        };
+      })
+      .filter((item): item is ExplorerDetails["summaryCards"][number] => Boolean(item));
+  }
+
+  if (isRecord(value)) {
+    return Object.entries(value).map(([key, item]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, item) }));
+  }
+
+  return [];
+}
+
+function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDetails {
+  const source = unwrapDetailsPayload(payload);
+  const summarySource = source.summaryCards ?? source.summary ?? source.cards ?? source.metrics;
+  const summaryCards = normalizeSummaryCards(summarySource);
+  const latest = isRecord(source.latest) ? source.latest : isRecord(source.latestSnapshot) ? source.latestSnapshot : isRecord(source.snapshot) ? source.snapshot : null;
+  const latestCards = summaryCards.length === 0 && latest
+    ? Object.entries(latest).slice(0, 8).map(([key, value]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, value) }))
+    : [];
+  return {
+    title: asString(source.title) ?? asString(source.label) ?? asString(source.name) ?? node?.label ?? "Node details",
+    subtitle: asString(source.subtitle) ?? asString(source.description) ?? null,
+    type: asString(source.type) ?? node?.type ?? "node",
+    status: asString(source.status) ?? node?.status ?? null,
+    summaryCards: summaryCards.length > 0 ? summaryCards : latestCards,
+    latest,
+    datasets: normalizeDatasets(source, node),
+  };
+}
+
+function normalizeHistoryColumn(item: unknown): ExplorerHistoryColumn | undefined {
+  if (typeof item === "string") return { key: item, label: formatMetricLabel(item) };
+  if (!isRecord(item)) return undefined;
+  const key = asString(item.key) ?? asString(item.id) ?? asString(item.name);
+  if (!key) return undefined;
+  return { key, label: formatMetricLabel(asString(item.label) ?? key), type: asString(item.type) ?? null };
+}
+
+function unwrapHistoryPayload(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload)) return {};
+  return isRecord(payload.data) ? payload.data : payload;
+}
+
+function normalizeHistory(payload: unknown): ExplorerHistory {
+  const source = unwrapHistoryPayload(payload);
+  const rows = (Array.isArray(source.rows) ? source.rows : Array.isArray(source.items) ? source.items : Array.isArray(source.records) ? source.records : Array.isArray(source.history) ? source.history : [])
     .filter(isRecord)
-    .map((record) => {
-      const normalized: HistoryRecord = {};
-      Object.entries(record).forEach(([key, value]) => {
-        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null) {
-          normalized[key] = value;
-        }
-      });
-      return normalized;
-    })
-    .sort((a, b) => Date.parse(String(b.timestamp ?? b.created_at ?? b.snapshot_at ?? 0)) - Date.parse(String(a.timestamp ?? a.created_at ?? a.snapshot_at ?? 0)));
+    .map((row) => ({ ...row }));
+  const normalizedColumns = (Array.isArray(source.columns) ? source.columns : [])
+    .map(normalizeHistoryColumn)
+    .filter((column): column is ExplorerHistoryColumn => Boolean(column));
+  const rowKeys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  const columns = normalizedColumns.length > 0 ? normalizedColumns : rowKeys.map((key) => ({ key, label: formatMetricLabel(key), type: null }));
+  const pagination = isRecord(source.pagination) ? source.pagination : {};
+
+  return {
+    columns: orderHistoryColumns(columns),
+    rows,
+    nextCursor: asString(pagination.cursor) ?? asString(pagination.nextCursor) ?? asString(source.nextCursor) ?? null,
+  };
 }
 
 function formatDate(timestamp: string): string {
@@ -528,7 +628,60 @@ function formatValue(value: unknown): string {
   if (typeof value === "number") return formatNumber(value);
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "string" && value.trim().length > 0) return value;
+  if (value !== null && typeof value === "object") {
+    try {
+      const serialized = JSON.stringify(value);
+      return serialized.length > 96 ? `${serialized.slice(0, 93)}...` : serialized;
+    } catch {
+      return "Object";
+    }
+  }
   return "N/A";
+}
+
+function isAumField(value: string): boolean {
+  const normalized = value.replace(/[\s_-]+/g, "").toLowerCase();
+  return normalized === "nav" || normalized === "navusd" || normalized === "aum" || normalized === "aumusd";
+}
+
+function formatFieldValue(field: string, value: unknown): string {
+  if (isAumField(field)) {
+    return formatUsdOrNA(asNumber(value));
+  }
+
+  return formatValue(value);
+}
+
+function formatDatasetLabel(value: string): string {
+  const labels: Record<string, string> = {
+    snapshots: "Snapshots",
+    balances: "Balances",
+    positions_generic: "Generic positions",
+    positions_lp: "LP positions",
+    positions_futures: "Futures",
+    hedge: "Hedge",
+    errors: "Errors",
+  };
+  return labels[value] ?? value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatMetricLabel(key: string): string {
+  const normalized = key.trim().replace(/[\s_-]+/g, "").toLowerCase();
+  const labels: Record<string, string> = {
+    nav: "AUM",
+    navusd: "AUM",
+    aum: "AUM",
+    aumusd: "AUM",
+    unitprice: "Unit Price",
+  };
+  return labels[normalized] ?? formatDatasetLabel(key);
+}
+
+function orderHistoryColumns(columns: ExplorerHistoryColumn[]): ExplorerHistoryColumn[] {
+  const timestampIndex = columns.findIndex((column) => ["timestamp", "snapshot_at", "created_at", "updated_at", "time", "date"].includes(column.key));
+  if (timestampIndex < 0) return columns.slice(0, 12);
+  const timestampColumn = columns[timestampIndex];
+  return [timestampColumn, ...columns.filter((_, index) => index !== timestampIndex)].slice(0, 12);
 }
 
 function formatDateTimeOrNA(value: string | null | undefined): string {
@@ -788,19 +941,6 @@ function toVisibleSeriesPoints(series?: NormalizedChartSeries, requirePositive =
   return Array.from(pointsByTime.values()).sort((left, right) => left.time - right.time);
 }
 
-function createDisplaySeries(base: NormalizedChartSeries, label: string, points: VisibleSeriesPoint[]): NormalizedChartSeries {
-  return {
-    ...base,
-    label,
-    points: points.map((point) => ({
-      timestamp: point.timestamp,
-      value: point.value,
-      rawValue: point.value,
-      normalizedValue: null,
-    })),
-  };
-}
-
 function reindexVisibleSeriesPoints(points: VisibleSeriesPoint[]): VisibleSeriesPoint[] {
   const timestampsByTime = new Map(points.map((point) => [point.time, point.timestamp]));
   return reindexToFirstVisiblePoint(points).map((point) => ({
@@ -814,32 +954,84 @@ function filterBenchmarkPointsToPrimaryTimes(primaryPoints: VisibleSeriesPoint[]
   return benchmarkPoints.filter((point) => primaryTimes.has(point.time));
 }
 
-function buildVisibleChartRows(primarySeries?: NormalizedChartSeries, benchmarkSeries?: NormalizedChartSeries): ChartRow[] {
-  const rowsByTime = new Map<number, ChartRow>();
-
-  primarySeries?.points.forEach((point) => {
-    if (point.value === null || !Number.isFinite(point.value)) return;
-    const time = toUnixTimeSeconds(point.timestamp);
-    if (time === null) return;
-    rowsByTime.set(time, { timestamp: point.timestamp, primary: point.value });
-  });
-
-  benchmarkSeries?.points.forEach((point) => {
-    if (point.value === null || !Number.isFinite(point.value)) return;
-    const time = toUnixTimeSeconds(point.timestamp);
-    if (time === null) return;
-    const row = rowsByTime.get(time);
-    if (!row || row.primary === undefined) return;
-    row.benchmark = point.value;
-  });
-
-  return Array.from(rowsByTime.entries())
-    .sort(([left], [right]) => left - right)
-    .map(([, row]) => row);
+function toChartViewData(points: VisibleSeriesPoint[]): Array<{ time: number; value: number }> {
+  return points.map((point) => ({ time: point.time, value: point.value }));
 }
 
-function getFiniteSeriesValues(series?: NormalizedChartSeries): number[] {
-  return (series?.points ?? [])
+function createSeriesFromChartViewData(label: string, data: Array<{ time: number; value: number }>, type: "primary" | "benchmark", symbol?: string): NormalizedChartSeries {
+  return {
+    id: type,
+    chartKey: type,
+    label,
+    type,
+    symbol,
+    warnings: [],
+    points: data.map((point) => ({
+      timestamp: new Date(point.time * 1000).toISOString(),
+      value: point.value,
+      rawValue: point.value,
+      normalizedValue: null,
+    })),
+  };
+}
+
+function buildChartView({
+  chartMode,
+  primarySeries,
+  selectedBenchmark,
+  benchmarkCache,
+}: {
+  chartMode: ChartMode;
+  primarySeries?: NormalizedChartSeries;
+  selectedBenchmark: string | null;
+  benchmarkCache: BenchmarkCache;
+}): ChartView {
+  if (chartMode === "nav_usd") {
+    return {
+      mode: "aum",
+      title: "AUM",
+      subtitle: "Total value of assets under management.",
+      primaryLabel: "AUM",
+      primaryData: toChartViewData(toVisibleSeriesPoints(primarySeries)),
+      benchmarkData: [],
+      valueMode: "usd",
+    };
+  }
+
+  const primaryPoints = toVisibleSeriesPoints(primarySeries, true);
+  if (!selectedBenchmark) {
+    return {
+      mode: "unit_price",
+      title: "Unit Price",
+      subtitle: "Strategy group unit price history.",
+      primaryLabel: "Unit Price",
+      primaryData: toChartViewData(primaryPoints),
+      benchmarkData: [],
+      valueMode: "unit_price",
+    };
+  }
+
+  const benchmarkSeries = benchmarkCache[selectedBenchmark];
+  const benchmarkPoints = benchmarkSeries
+    ? filterBenchmarkPointsToPrimaryTimes(primaryPoints, toVisibleSeriesPoints(benchmarkSeries, true))
+    : [];
+  const primaryData = toChartViewData(reindexVisibleSeriesPoints(primaryPoints));
+  const benchmarkData = toChartViewData(reindexVisibleSeriesPoints(benchmarkPoints));
+
+  return {
+    mode: "unit_price",
+    title: "Unit Price Index",
+    subtitle: "Compare strategy performance against the selected benchmark on the same indexed scale.",
+    primaryLabel: "Unit Price Index",
+    benchmarkLabel: benchmarkData.length > 0 ? `${selectedBenchmark} Index` : undefined,
+    primaryData,
+    benchmarkData,
+    valueMode: "index",
+  };
+}
+
+function getFiniteChartViewValues(data: Array<{ value: number }>): number[] {
+  return data
     .map((point) => point.value)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
 }
@@ -905,15 +1097,16 @@ export function StrategiesPage(): JSX.Element {
   const { strategyId } = useParams<{ strategyId: string }>();
   const navigate = useNavigate();
   const [strategies, setStrategies] = useState<StrategySummary[]>([]);
-  const [chartSeries, setChartSeries] = useState<NormalizedChartSeries[]>([]);
+  const [primaryChartCache, setPrimaryChartCache] = useState<PrimaryChartCache>({});
   const [benchmarkOptions, setBenchmarkOptions] = useState<BenchmarkOption[]>([]);
   const [benchmarkCache, setBenchmarkCache] = useState<BenchmarkCache>({});
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [headerStrategy, setHeaderStrategy] = useState<StrategyGroupHeader | null>(null);
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [nodeDetails, setNodeDetails] = useState<ExplorerDetails | null>(null);
-  const [historyRows, setHistoryRows] = useState<HistoryRecord[]>([]);
+  const [historyData, setHistoryData] = useState<ExplorerHistory>({ columns: [], rows: [] });
+  const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
   const [historySearch, setHistorySearch] = useState("");
   const [isLoadingStrategies, setIsLoadingStrategies] = useState(true);
   const [isLoadingBenchmarks, setIsLoadingBenchmarks] = useState(true);
@@ -1007,7 +1200,7 @@ export function StrategiesPage(): JSX.Element {
   const firstStrategy = strategies[0];
   const isStrategyNotFound = Boolean(strategyId && !isLoadingStrategies && strategies.length > 0 && !selectedStrategy);
   const activeStrategy = headerStrategy ?? selectedStrategy;
-  const selectedTreeNode = useMemo(() => findTreeNode(treeNodes, selectedNodeId), [selectedNodeId, treeNodes]);
+  const selectedTreeNode = useMemo(() => findTreeNode(treeNodes, selectedNodeKey), [selectedNodeKey, treeNodes]);
   const filteredStrategies = useMemo(() => {
     const query = strategySearch.trim().toLowerCase();
     if (!query) return strategies;
@@ -1019,9 +1212,9 @@ export function StrategiesPage(): JSX.Element {
   }, [strategies, strategySearch]);
   const filteredHistoryRows = useMemo(() => {
     const query = historySearch.trim().toLowerCase();
-    if (!query) return historyRows;
-    return historyRows.filter((row) => Object.values(row).some((value) => String(value ?? "").toLowerCase().includes(query)));
-  }, [historyRows, historySearch]);
+    if (!query) return historyData.rows;
+    return historyData.rows.filter((row) => Object.values(row).some((value) => formatValue(value).toLowerCase().includes(query)));
+  }, [historyData.rows, historySearch]);
   const primaryMetrics = useMemo((): Metric[] => {
     if (isLoadingHeader) {
       return [
@@ -1134,24 +1327,31 @@ export function StrategiesPage(): JSX.Element {
 
   useEffect(() => {
     if (!selectedStrategy) {
-      setChartSeries([]);
       return;
     }
+    const metric = chartMode === "nav_usd" ? "nav_usd" : "unit_price";
+    const cacheKey = `${selectedStrategy.id}:${metric}`;
+    if (primaryChartCache[cacheKey]) {
+      setIsLoadingNav(false);
+      setNavError(null);
+      return;
+    }
+
     let active = true;
     setIsLoadingNav(true);
     setNavError(null);
     const params = new URLSearchParams({
       scope: "group",
-      metric: chartMode === "nav_usd" ? "nav_usd" : "unit_price",
+      metric,
       normalize: "false",
     });
     fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/chart?${params.toString()}`)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeChartResponse(payload, chartMode);
-        const hasPrimaryPoints = normalized.series.some((series) => series.type === "primary" && series.points.length > 0);
-        if (hasPrimaryPoints) {
-          setChartSeries(normalized.series);
+        const primarySeries = normalized.series.find((series) => series.type === "primary" && series.points.length > 0);
+        if (primarySeries) {
+          setPrimaryChartCache((current) => ({ ...current, [cacheKey]: primarySeries }));
           setNavError(null);
         } else {
           setNavError("Unable to load primary strategy series.");
@@ -1167,7 +1367,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [chartMode, selectedStrategy]);
+  }, [chartMode, primaryChartCache, selectedStrategy]);
 
   useEffect(() => {
     if (chartMode !== "unit_price" || !selectedBenchmark || benchmarkCache[selectedBenchmark]) {
@@ -1200,19 +1400,19 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     if (!selectedStrategy) {
       setTreeNodes([]);
-      setSelectedNodeId(null);
+      setSelectedNodeKey(null);
       return;
     }
     let active = true;
     setIsLoadingTree(true);
     setTreeError(null);
-    setSelectedNodeId(null);
+    setSelectedNodeKey(null);
     fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/tree`)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeTree(payload);
         setTreeNodes(normalized);
-        setSelectedNodeId(getFirstTreeNode(normalized)?.id ?? null);
+        setSelectedNodeKey(getFirstTreeNode(normalized)?.uiKey ?? null);
       })
       .catch(() => {
         if (!active) return;
@@ -1230,7 +1430,8 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode) {
       setNodeDetails(null);
-      setHistoryRows([]);
+      setHistoryData({ columns: [], rows: [] });
+      setSelectedDataset(null);
       return;
     }
     let active = true;
@@ -1238,27 +1439,61 @@ export function StrategiesPage(): JSX.Element {
     setIsLoadingHistory(true);
     setDetailsError(null);
     setHistoryError(null);
-    fetchJson(buildExplorerDetailsUrl("/api/v1", selectedStrategy.id, selectedTreeNode))
+    setNodeDetails(null);
+    setHistoryData({ columns: [], rows: [] });
+    setSelectedDataset(null);
+    const detailsUrl = buildExplorerDetailsUrl("/api/v1", selectedStrategy.id, selectedTreeNode);
+    if (import.meta.env.DEV) {
+      console.debug("Explorer selected node", selectedTreeNode);
+      console.debug("Explorer details URL", detailsUrl);
+    }
+    fetchJson(detailsUrl)
       .then((payload) => {
-        if (active) setNodeDetails(normalizeDetails(payload, selectedTreeNode));
+        if (!active) return;
+        if (import.meta.env.DEV) {
+          console.debug("Explorer details raw response", payload);
+        }
+        const details = normalizeDetails(payload, selectedTreeNode);
+        setNodeDetails(details);
+        setSelectedDataset(details.datasets[0]?.id ?? getDefaultDatasetForNode(selectedTreeNode));
       })
       .catch(() => {
         if (active) {
           setNodeDetails(null);
           setDetailsError("Unable to load explorer details.");
+          setIsLoadingHistory(false);
         }
       })
       .finally(() => {
         if (active) setIsLoadingDetails(false);
       });
 
-    fetchJson(buildExplorerHistoryUrl("/api/v1", selectedStrategy.id, selectedTreeNode, 50))
+    return () => {
+      active = false;
+    };
+  }, [selectedStrategy, selectedTreeNode]);
+
+  useEffect(() => {
+    if (!selectedStrategy || !selectedTreeNode || !selectedDataset) return;
+    let active = true;
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+    setHistoryData({ columns: [], rows: [] });
+    const historyUrl = buildExplorerHistoryUrl("/api/v1", selectedStrategy.id, selectedTreeNode, selectedDataset, 500);
+    if (import.meta.env.DEV) {
+      console.debug("Explorer history URL", historyUrl);
+    }
+    fetchJson(historyUrl)
       .then((payload) => {
-        if (active) setHistoryRows(normalizeHistory(payload));
+        if (!active) return;
+        if (import.meta.env.DEV) {
+          console.debug("Explorer history raw response", payload);
+        }
+        setHistoryData(normalizeHistory(payload));
       })
       .catch(() => {
         if (active) {
-          setHistoryRows([]);
+          setHistoryData({ columns: [], rows: [] });
           setHistoryError("Unable to load explorer history.");
         }
       })
@@ -1269,35 +1504,22 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [selectedStrategy, selectedTreeNode]);
+  }, [selectedDataset, selectedStrategy, selectedTreeNode]);
 
   const analytics = useMemo(() => {
-    const rawPrimarySeries = chartSeries.find((series) => series.type === "primary" && series.points.length > 0);
-    const basePrimarySeries = rawPrimarySeries
-      ? {
-          ...rawPrimarySeries,
-          chartKey: "primary",
-          label: chartMode === "nav_usd" ? "AUM" : "Unit Price",
-        }
+    const metric = chartMode === "nav_usd" ? "nav_usd" : "unit_price";
+    const cacheKey = selectedStrategy ? `${selectedStrategy.id}:${metric}` : "";
+    const chartView = buildChartView({
+      chartMode,
+      primarySeries: primaryChartCache[cacheKey],
+      selectedBenchmark,
+      benchmarkCache,
+    });
+    const primarySeries = createSeriesFromChartViewData(chartView.primaryLabel, chartView.primaryData, "primary");
+    const benchmarkSeries = chartView.benchmarkLabel
+      ? createSeriesFromChartViewData(chartView.benchmarkLabel, chartView.benchmarkData, "benchmark", selectedBenchmark ?? undefined)
       : undefined;
-    const selectedBenchmarkSeries = chartMode === "unit_price" && selectedBenchmark ? benchmarkCache[selectedBenchmark] : undefined;
-    const rawBenchmarkSeries = selectedBenchmarkSeries ? { ...selectedBenchmarkSeries, chartKey: "benchmark", label: selectedBenchmarkSeries.symbol ?? selectedBenchmark ?? selectedBenchmarkSeries.label } : undefined;
-    const hasBenchmarkOverlay = chartMode === "unit_price" && Boolean(selectedBenchmark);
-    const primaryVisiblePoints = toVisibleSeriesPoints(basePrimarySeries, chartMode === "unit_price");
-    const benchmarkVisiblePoints = hasBenchmarkOverlay && rawBenchmarkSeries ? filterBenchmarkPointsToPrimaryTimes(primaryVisiblePoints, toVisibleSeriesPoints(rawBenchmarkSeries, true)) : [];
-    const reindexedBenchmarkPoints = reindexVisibleSeriesPoints(benchmarkVisiblePoints);
-    const primarySeries = basePrimarySeries
-      ? createDisplaySeries(
-          basePrimarySeries,
-          hasBenchmarkOverlay ? "Unit Price Index" : basePrimarySeries.label,
-          hasBenchmarkOverlay ? reindexVisibleSeriesPoints(primaryVisiblePoints) : primaryVisiblePoints,
-        )
-      : undefined;
-    const benchmarkSeries = rawBenchmarkSeries && hasBenchmarkOverlay && reindexedBenchmarkPoints.length > 0
-      ? createDisplaySeries(rawBenchmarkSeries, `${rawBenchmarkSeries.symbol ?? selectedBenchmark ?? rawBenchmarkSeries.label} Index`, reindexedBenchmarkPoints)
-      : undefined;
-    const chartData = buildVisibleChartRows(primarySeries, benchmarkSeries);
-    const values = getFiniteSeriesValues(primarySeries);
+    const values = getFiniteChartViewValues(chartView.primaryData);
     const strategyReturns = toReturns(values);
     const correlation = primarySeries && benchmarkSeries ? pearsonAligned(primarySeries, benchmarkSeries) : null;
     const correlations = correlation === null || !benchmarkSeries ? [] : [`${benchmarkSeries.label} ${correlation.toFixed(2)}`];
@@ -1318,8 +1540,17 @@ export function StrategiesPage(): JSX.Element {
         hint: "Prototype estimate based on AUM or unit price returns.",
       },
     ];
-    return { advancedMetrics, benchmarkSeries, chartData };
-  }, [benchmarkCache, chartMode, chartSeries, selectedBenchmark]);
+    if (import.meta.env.DEV) {
+      console.debug("ChartView", {
+        mode: chartView.mode,
+        primaryPoints: chartView.primaryData.length,
+        benchmarkPoints: chartView.benchmarkData.length,
+        firstPrimary: chartView.primaryData[0],
+        firstBenchmark: chartView.benchmarkData[0],
+      });
+    }
+    return { advancedMetrics, chartView };
+  }, [benchmarkCache, chartMode, primaryChartCache, selectedBenchmark, selectedStrategy]);
 
   function handleStrategyChange(nextId: string): void {
     setIsSelectorOpen(false);
@@ -1446,21 +1677,15 @@ export function StrategiesPage(): JSX.Element {
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="min-w-0 rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
-            <div className="mb-5 flex flex-col justify-between gap-4 md:flex-row md:items-start">
-              <div>
+            <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
                   <LineChart className="h-4 w-4 text-cyan-200" />
-                  {chartMode === "nav_usd" ? "AUM" : selectedBenchmark ? "Unit Price Index" : "Unit Price"}
+                  {analytics.chartView.title}
                 </div>
-                <p className="mt-2 text-sm text-slate-500">
-                  {chartMode === "nav_usd"
-                    ? "Total value of assets under management."
-                    : selectedBenchmark
-                      ? "Unit price and selected benchmark indexed from the first visible strategy point."
-                      : "Strategy group unit price history."}
-                </p>
+                <p className="mt-2 text-sm text-slate-500">{analytics.chartView.subtitle}</p>
               </div>
-              <div className="flex max-w-xl flex-wrap items-center justify-end gap-2">
+              <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:flex-nowrap lg:w-auto lg:shrink-0">
                 <SegmentedControl
                   value={chartMode}
                   options={[
@@ -1518,9 +1743,7 @@ export function StrategiesPage(): JSX.Element {
               </div>
             </div>
             <StrategyTimeSeriesChart
-              data={analytics.chartData}
-              mode={chartMode}
-              benchmarkSymbol={chartMode === "unit_price" ? selectedBenchmark : null}
+              chartView={analytics.chartView}
               loading={isLoadingNav}
             />
             {navError ? (
@@ -1558,6 +1781,7 @@ export function StrategiesPage(): JSX.Element {
         <DataExplorer
           details={nodeDetails}
           detailsError={detailsError}
+          historyColumns={historyData.columns}
           historyError={historyError}
           historyRows={filteredHistoryRows}
           historySearch={historySearch}
@@ -1565,12 +1789,14 @@ export function StrategiesPage(): JSX.Element {
           isLoadingHistory={isLoadingHistory}
           isLoadingTree={isLoadingTree}
           nodes={treeNodes}
-          selectedNodeId={selectedNodeId}
+          selectedNodeKey={selectedNodeKey}
           selectedNode={selectedTreeNode}
+          selectedDataset={selectedDataset}
           treeError={treeError}
-          totalHistoryRows={historyRows.length}
+          totalHistoryRows={historyData.rows.length}
+          onDatasetChange={setSelectedDataset}
           onHistorySearchChange={setHistorySearch}
-          onSelectNode={setSelectedNodeId}
+          onSelectNode={setSelectedNodeKey}
         />
       </section>
     </main>
@@ -1589,6 +1815,7 @@ function StatusPill({ active, label }: { active: boolean; label: string }): JSX.
 function DataExplorer({
   details,
   detailsError,
+  historyColumns,
   historyError,
   historyRows,
   historySearch,
@@ -1596,15 +1823,18 @@ function DataExplorer({
   isLoadingHistory,
   isLoadingTree,
   nodes,
+  selectedDataset,
   selectedNode,
-  selectedNodeId,
+  selectedNodeKey,
   totalHistoryRows,
   treeError,
+  onDatasetChange,
   onHistorySearchChange,
   onSelectNode,
 }: {
   details: ExplorerDetails | null;
   detailsError: string | null;
+  historyColumns: ExplorerHistoryColumn[];
   historyError: string | null;
   historyRows: HistoryRecord[];
   historySearch: string;
@@ -1612,14 +1842,16 @@ function DataExplorer({
   isLoadingHistory: boolean;
   isLoadingTree: boolean;
   nodes: ExplorerTreeNode[];
+  selectedDataset: string | null;
   selectedNode?: ExplorerTreeNode;
-  selectedNodeId: string | null;
+  selectedNodeKey: string | null;
   totalHistoryRows: number;
   treeError: string | null;
+  onDatasetChange: (dataset: string) => void;
   onHistorySearchChange: (value: string) => void;
   onSelectNode: (nodeId: string) => void;
 }): JSX.Element {
-  const columns = getHistoryColumns(historyRows);
+  const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
 
   return (
     <section className="mt-6 rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
@@ -1638,7 +1870,7 @@ function DataExplorer({
           {!isLoadingTree && !treeError && nodes.length === 0 ? <div className="p-3 text-sm text-slate-500">No explorer tree available.</div> : null}
           <div className="space-y-1">
             {nodes.map((node) => (
-              <TreeNodeButton key={node.id} node={node} depth={0} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode} />
+              <TreeNodeButton key={node.uiKey} node={node} depth={0} selectedNodeKey={selectedNodeKey} onSelectNode={onSelectNode} />
             ))}
           </div>
         </aside>
@@ -1653,16 +1885,17 @@ function DataExplorer({
                   <div>
                     <div className="text-lg font-semibold text-white">{details?.title ?? selectedNode?.label ?? "Select a node"}</div>
                     <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">{details?.type ?? selectedNode?.type ?? "No node selected"}{details?.status ? ` / ${details.status}` : ""}</div>
+                    {details?.subtitle ? <div className="mt-1 text-xs text-slate-500">{details.subtitle}</div> : null}
                   </div>
                 </div>
-                {details?.summary.length ? (
+                {details?.summaryCards.length ? (
                   <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    {details.summary.map((item) => (
+                    {details.summaryCards.map((item) => (
                       <MetricChip key={item.label} label={item.label} value={item.value} />
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-4 text-sm text-slate-500">No summary details returned for this node.</p>
+                  <p className="mt-4 text-sm text-slate-500">No summary details are available for this node yet.</p>
                 )}
               </>
             ) : null}
@@ -1681,10 +1914,29 @@ function DataExplorer({
                 className="h-10 rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40 md:w-72"
               />
             </div>
-            {isLoadingHistory ? <div className="text-sm text-slate-500">Loading history records...</div> : null}
+            {details?.datasets.length ? (
+              <div className="mb-4 flex flex-wrap gap-2">
+                {details.datasets.map((dataset) => (
+                  <button
+                    key={dataset.id}
+                    type="button"
+                    onClick={() => onDatasetChange(dataset.id)}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                      selectedDataset === dataset.id
+                        ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
+                        : "border-white/10 bg-white/[0.035] text-slate-400 hover:border-cyan-300/30 hover:text-white",
+                    )}
+                  >
+                    {dataset.label}{dataset.count !== null && dataset.count !== undefined ? ` (${dataset.count})` : ""}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {isLoadingHistory ? <div className="text-sm text-slate-500">Loading history...</div> : null}
             {historyError ? <div className="text-sm text-amber-100">{historyError}</div> : null}
-            {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for this node.</div> : null}
-            {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={columns} /> : null}
+            {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}.</div> : null}
+            {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} /> : null}
           </div>
         </div>
       </div>
@@ -1695,20 +1947,20 @@ function DataExplorer({
 function TreeNodeButton({
   depth,
   node,
-  selectedNodeId,
+  selectedNodeKey,
   onSelectNode,
 }: {
   depth: number;
   node: ExplorerTreeNode;
-  selectedNodeId: string | null;
-  onSelectNode: (nodeId: string) => void;
+  selectedNodeKey: string | null;
+  onSelectNode: (uiKey: string) => void;
 }): JSX.Element {
-  const selected = node.id === selectedNodeId;
+  const selected = node.uiKey === selectedNodeKey;
   return (
     <div>
       <button
         type="button"
-        onClick={() => onSelectNode(node.id)}
+        onClick={() => onSelectNode(node.uiKey)}
         className={cn(
           "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition",
           selected ? "bg-cyan-300/12 text-white ring-1 ring-cyan-300/25" : "text-slate-300 hover:bg-cyan-300/8 hover:text-white",
@@ -1722,32 +1974,25 @@ function TreeNodeButton({
         {node.count !== undefined ? <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-slate-400">{node.count}</span> : null}
       </button>
       {node.children?.map((child) => (
-        <TreeNodeButton key={child.id} node={child} depth={depth + 1} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode} />
+        <TreeNodeButton key={child.uiKey} node={child} depth={depth + 1} selectedNodeKey={selectedNodeKey} onSelectNode={onSelectNode} />
       ))}
     </div>
   );
 }
 
-function getHistoryColumns(rows: HistoryRecord[]): string[] {
-  const keys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-  const timestampKey = keys.find((key) => ["timestamp", "snapshot_at", "created_at", "time"].includes(key));
-  const ordered = timestampKey ? [timestampKey, ...keys.filter((key) => key !== timestampKey)] : keys;
-  return ordered.slice(0, 8);
-}
-
-function HistoryTable({ rows, columns }: { rows: HistoryRecord[]; columns: string[] }): JSX.Element {
+function HistoryTable({ rows, columns }: { rows: HistoryRecord[]; columns: ExplorerHistoryColumn[] }): JSX.Element {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <thead>
           <tr className="border-y border-white/10 text-left text-[10px] uppercase tracking-[0.14em] text-slate-500">
-            {columns.map((column) => <th key={column} className="px-3 py-3 font-medium">{column}</th>)}
+            {columns.map((column) => <th key={column.key} className="px-3 py-3 font-medium">{column.label}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, index) => (
             <tr key={index} className="border-b border-white/[0.06] text-slate-300 hover:bg-white/[0.025]">
-              {columns.map((column) => <td key={column} className="max-w-[220px] truncate px-3 py-3">{formatValue(row[column])}</td>)}
+              {columns.map((column) => <td key={column.key} className="max-w-[220px] truncate px-3 py-3">{formatFieldValue(column.key, row[column.key])}</td>)}
             </tr>
           ))}
         </tbody>

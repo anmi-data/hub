@@ -15,16 +15,24 @@ import {
 } from "lightweight-charts";
 import { Loader2 } from "lucide-react";
 
-export type ChartPoint = {
-  timestamp: string;
-  primary?: number | null;
-  benchmark?: number | null;
+export type ChartViewPoint = {
+  time: number;
+  value: number;
+};
+
+export type ChartView = {
+  mode: "aum" | "unit_price";
+  title: string;
+  subtitle: string;
+  primaryLabel: string;
+  benchmarkLabel?: string;
+  primaryData: ChartViewPoint[];
+  benchmarkData: ChartViewPoint[];
+  valueMode: "usd" | "unit_price" | "index";
 };
 
 type StrategyTimeSeriesChartProps = {
-  data: ChartPoint[];
-  mode: "nav_usd" | "unit_price";
-  benchmarkSymbol?: string | null;
+  chartView: ChartView;
   loading?: boolean;
 };
 
@@ -37,8 +45,8 @@ type TooltipState = {
   benchmark?: string;
 };
 
-function formatPrimaryValue(value: number, mode: StrategyTimeSeriesChartProps["mode"], indexed: boolean): string {
-  if (mode === "nav_usd") {
+function formatPrimaryValue(value: number, valueMode: ChartView["valueMode"]): string {
+  if (valueMode === "usd") {
     return value.toLocaleString("en-US", {
       style: "currency",
       currency: "USD",
@@ -46,7 +54,7 @@ function formatPrimaryValue(value: number, mode: StrategyTimeSeriesChartProps["m
     });
   }
 
-  if (indexed) {
+  if (valueMode === "index") {
     return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
@@ -79,41 +87,22 @@ function formatTooltipDate(time: Time): string {
   return String(time);
 }
 
-function toChartTime(timestamp: string): UTCTimestamp | null {
-  const parsed = Date.parse(timestamp);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.floor(parsed / 1000) as UTCTimestamp;
+function toSeriesTime(time: number): UTCTimestamp {
+  return time as UTCTimestamp;
 }
 
-function toAreaData(data: ChartPoint[]): AreaData<Time>[] {
-  const values = new Map<number, number>();
-
-  data.forEach((point) => {
-    if (point.primary === null || point.primary === undefined || !Number.isFinite(point.primary)) return;
-    const time = toChartTime(point.timestamp);
-    if (time === null) return;
-    values.set(time, point.primary);
-  });
-
-  return Array.from(values.entries())
-    .sort(([left], [right]) => left - right)
-    .map(([time, value]) => ({ time: time as UTCTimestamp, value }));
+function toAreaData(data: ChartViewPoint[]): AreaData<Time>[] {
+  return data
+    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value))
+    .sort((left, right) => left.time - right.time)
+    .map((point) => ({ time: toSeriesTime(point.time), value: point.value }));
 }
 
-function toLineData(data: ChartPoint[]): LineData<Time>[] {
-  const values = new Map<number, number>();
-
-  data.forEach((point) => {
-    if (point.primary === null || point.primary === undefined || !Number.isFinite(point.primary)) return;
-    if (point.benchmark === null || point.benchmark === undefined || !Number.isFinite(point.benchmark)) return;
-    const time = toChartTime(point.timestamp);
-    if (time === null) return;
-    values.set(time, point.benchmark);
-  });
-
-  return Array.from(values.entries())
-    .sort(([left], [right]) => left - right)
-    .map(([time, value]) => ({ time: time as UTCTimestamp, value }));
+function toLineData(data: ChartViewPoint[]): LineData<Time>[] {
+  return data
+    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value))
+    .sort((left, right) => left.time - right.time)
+    .map((point) => ({ time: toSeriesTime(point.time), value: point.value }));
 }
 
 function getSeriesValue(item: unknown): number | undefined {
@@ -127,30 +116,25 @@ function getDataSignature(data: Array<{ time: Time; value: number }>): string {
 }
 
 export function StrategyTimeSeriesChart({
-  data,
-  mode,
-  benchmarkSymbol,
+  chartView,
   loading = false,
 }: StrategyTimeSeriesChartProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const primarySeriesRef = useRef<ISeriesApi<"Area", Time> | null>(null);
   const benchmarkSeriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
-  const modeRef = useRef(mode);
-  const benchmarkSymbolRef = useRef(benchmarkSymbol);
+  const chartViewRef = useRef(chartView);
   const primarySignatureRef = useRef<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, date: "" });
 
-  const primaryData = useMemo(() => toAreaData(data), [data]);
-  const benchmarkData = useMemo(() => toLineData(data), [data]);
+  const primaryData = useMemo(() => toAreaData(chartView.primaryData), [chartView.primaryData]);
+  const benchmarkData = useMemo(() => toLineData(chartView.benchmarkData), [chartView.benchmarkData]);
   const primarySignature = useMemo(() => getDataSignature(primaryData), [primaryData]);
-  const hasBenchmark = Boolean(benchmarkSymbol && benchmarkData.length > 0);
-  const isIndexed = mode === "unit_price" && Boolean(benchmarkSymbol);
+  const hasBenchmark = benchmarkData.length > 0;
 
   useEffect(() => {
-    modeRef.current = mode;
-    benchmarkSymbolRef.current = benchmarkSymbol;
-  }, [benchmarkSymbol, mode]);
+    chartViewRef.current = chartView;
+  }, [chartView]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -218,7 +202,7 @@ export function StrategyTimeSeriesChart({
         x: Math.min(param.point.x + 14, Math.max(14, container.clientWidth - 190)),
         y: Math.min(param.point.y + 14, Math.max(14, container.clientHeight - 112)),
         date: formatTooltipDate(param.time),
-        primary: primaryValue === undefined ? undefined : formatPrimaryValue(primaryValue, modeRef.current, modeRef.current === "unit_price" && Boolean(benchmarkSymbolRef.current)),
+        primary: primaryValue === undefined ? undefined : formatPrimaryValue(primaryValue, chartViewRef.current.valueMode),
         benchmark: benchmarkValue === undefined ? undefined : formatBenchmarkValue(benchmarkValue),
       });
     };
@@ -242,6 +226,7 @@ export function StrategyTimeSeriesChart({
   }, []);
 
   useEffect(() => {
+    if (loading && primaryData.length === 0) return;
     if (primarySignatureRef.current === primarySignature) return;
     primarySignatureRef.current = primarySignature;
     primarySeriesRef.current?.setData(primaryData);
@@ -249,7 +234,7 @@ export function StrategyTimeSeriesChart({
     if (primaryData.length > 0) {
       chartRef.current?.timeScale().fitContent();
     }
-  }, [primaryData, primarySignature]);
+  }, [loading, primaryData, primarySignature]);
 
   useEffect(() => {
     benchmarkSeriesRef.current?.setData(hasBenchmark ? benchmarkData : []);
@@ -257,16 +242,16 @@ export function StrategyTimeSeriesChart({
 
   useEffect(() => {
     primarySeriesRef.current?.applyOptions({
-      priceFormat: mode === "nav_usd"
+      priceFormat: chartView.valueMode === "usd"
         ? { type: "custom", formatter: (price: BarPrice) => formatUsdAxisValue(Number(price)) }
-        : isIndexed
+        : chartView.valueMode === "index"
           ? { type: "price", precision: 2, minMove: 0.01 }
           : { type: "price", precision: 4, minMove: 0.0001 },
     });
     benchmarkSeriesRef.current?.applyOptions({
       priceFormat: { type: "price", precision: 2, minMove: 0.01 },
     });
-  }, [isIndexed, mode]);
+  }, [chartView.valueMode]);
 
   return (
     <div className="relative h-[420px]">
@@ -286,13 +271,13 @@ export function StrategyTimeSeriesChart({
           <div className="mb-1 text-[11px] font-medium text-cyan-100">{tooltip.date}</div>
           {tooltip.primary ? (
             <div className="flex items-center justify-between gap-5 text-slate-300">
-              <span>{mode === "nav_usd" ? "AUM" : isIndexed ? "Unit Price Index" : "Unit Price"}</span>
+              <span>{chartView.primaryLabel}</span>
               <span className="font-semibold tabular-nums text-white">{tooltip.primary}</span>
             </div>
           ) : null}
-          {tooltip.benchmark && benchmarkSymbol ? (
+          {tooltip.benchmark && chartView.benchmarkLabel ? (
             <div className="mt-1 flex items-center justify-between gap-5 text-slate-300">
-              <span>{benchmarkSymbol} Index</span>
+              <span>{chartView.benchmarkLabel}</span>
               <span className="font-semibold tabular-nums text-violet-100">{tooltip.benchmark}</span>
             </div>
           ) : null}
