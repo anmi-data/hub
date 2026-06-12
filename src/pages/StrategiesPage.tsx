@@ -1,17 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import {
-  Area,
-  CartesianGrid,
-  ComposedChart,
-  Legend,
-  Line,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, LineChart, Loader2, ShieldCheck, TrendingUp } from "lucide-react";
+import { StrategyTimeSeriesChart } from "../components/charts/StrategyTimeSeriesChart";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
 
@@ -52,9 +42,16 @@ type StrategyGroupHeader = {
   isLiveTrackRecord?: boolean;
 };
 
-type ExplorerTreeNode = {
+type ExplorerNode = {
   id: string;
   type: string;
+  entityId?: string;
+  strategyId?: string;
+  accountId?: string;
+  protocolType?: string;
+};
+
+type ExplorerTreeNode = ExplorerNode & {
   label: string;
   count?: number | null;
   status?: string | null;
@@ -88,9 +85,12 @@ type ApiChartSeriesPoint = {
   normalizedValue?: number | null;
 };
 
+type BenchmarkCache = Record<string, NormalizedChartSeries>;
+
 type ApiChartSeries = {
   id?: string;
   key?: string;
+  role?: string;
   symbol?: string;
   label?: string;
   kind?: string;
@@ -119,8 +119,18 @@ type NormalizedChartSeries = {
 
 type ChartRow = {
   timestamp: string;
-  date: string;
-} & Record<string, string | number>;
+  primary?: number;
+  benchmark?: number;
+};
+
+type TimePoint = {
+  time: number;
+  value: number;
+};
+
+type VisibleSeriesPoint = TimePoint & {
+  timestamp: string;
+};
 
 type Metric = {
   label: string;
@@ -141,8 +151,6 @@ const benchmarkLabelFallbacks: Record<string, string> = {
   CL: "WTI Crude Oil",
   NDX: "Nasdaq 100",
 };
-const chartColors = ["#a78bfa", "#a7f3d0", "#fbbf24", "#f472b6", "#60a5fa", "#fb7185", "#c4b5fd"];
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -181,13 +189,12 @@ function getChartPointValue(
   seriesType: "primary" | "benchmark",
   rawValue: number | null,
   normalizedValue: number | null,
-  hasBenchmark: boolean,
 ): number | null {
   if (chartMode === "nav_usd") {
     return rawValue ?? normalizedValue ?? null;
   }
 
-  if (seriesType === "benchmark" || hasBenchmark) {
+  if (seriesType === "benchmark") {
     return normalizedValue ?? rawValue ?? null;
   }
 
@@ -287,6 +294,10 @@ function normalizeTreeNode(item: unknown, fallbackId: string): ExplorerTreeNode 
   const id = asString(item.id) ?? asString(item.nodeId) ?? asString(item.key) ?? fallbackId;
   const type = asString(item.type) ?? asString(item.nodeType) ?? "node";
   const label = asString(item.label) ?? asString(item.name) ?? id;
+  const entityId = asString(item.entityId) ?? asString(item.entity_id) ?? asString(item.businessId) ?? asString(item.business_id);
+  const strategyId = asString(item.strategyId) ?? asString(item.strategy_id);
+  const accountId = asString(item.accountId) ?? asString(item.account_id);
+  const protocolType = asString(item.protocolType) ?? asString(item.protocol_type) ?? asString(item.protocol);
   const children = asArray(item.children)
     .map((child, index) => normalizeTreeNode(child, `${id}-${index}`))
     .filter((node): node is ExplorerTreeNode => Boolean(node));
@@ -297,6 +308,10 @@ function normalizeTreeNode(item: unknown, fallbackId: string): ExplorerTreeNode 
   if (count !== null) node.count = count;
   if (status) node.status = status;
   if (updatedAt) node.updatedAt = updatedAt;
+  if (entityId) node.entityId = entityId;
+  if (strategyId) node.strategyId = strategyId;
+  if (accountId) node.accountId = accountId;
+  if (protocolType) node.protocolType = protocolType.toLowerCase();
   if (children.length > 0) node.children = children;
   return node;
 }
@@ -326,6 +341,63 @@ function findTreeNode(nodes: ExplorerTreeNode[], nodeId: string | null): Explore
 
 function getFirstTreeNode(nodes: ExplorerTreeNode[]): ExplorerTreeNode | undefined {
   return nodes[0];
+}
+
+function getEntityId(node: ExplorerNode): string {
+  if (node.entityId) return node.entityId;
+
+  const separatorIndex = node.id.indexOf(":");
+  return separatorIndex >= 0 ? node.id.slice(separatorIndex + 1) : node.id;
+}
+
+function getDefaultDataset(node: ExplorerNode): string {
+  switch (node.type) {
+    case "strategy_group":
+    case "strategy":
+    case "account":
+      return "snapshots";
+
+    case "balance_group":
+      return "balances";
+
+    case "position_group":
+      if (node.protocolType === "lp") return "positions_lp";
+      if (node.protocolType === "futures" || node.protocolType === "perp") return "positions_futures";
+      return "positions_generic";
+
+    default:
+      return "snapshots";
+  }
+}
+
+export function buildExplorerDetailsUrl(apiBaseUrl: string, groupId: string, node: ExplorerNode): string {
+  const params = new URLSearchParams();
+
+  params.set("type", node.type);
+  params.set("id", getEntityId(node));
+  params.set("groupId", groupId);
+
+  if (node.strategyId) params.set("strategyId", node.strategyId);
+  if (node.accountId) params.set("accountId", node.accountId);
+  if (node.protocolType) params.set("protocolType", node.protocolType);
+
+  return `${apiBaseUrl}/explorer/details?${params.toString()}`;
+}
+
+export function buildExplorerHistoryUrl(apiBaseUrl: string, groupId: string, node: ExplorerNode, limit = 50): string {
+  const params = new URLSearchParams();
+
+  params.set("type", node.type);
+  params.set("id", getEntityId(node));
+  params.set("dataset", getDefaultDataset(node));
+  params.set("groupId", groupId);
+  params.set("limit", String(limit));
+
+  if (node.strategyId) params.set("strategyId", node.strategyId);
+  if (node.accountId) params.set("accountId", node.accountId);
+  if (node.protocolType) params.set("protocolType", node.protocolType);
+
+  return `${apiBaseUrl}/explorer/history?${params.toString()}`;
 }
 
 function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDetails {
@@ -583,13 +655,13 @@ function getPayloadWarnings(payload: unknown): string[] {
   return rawWarnings.map(asString).filter((item): item is string => Boolean(item));
 }
 
-function normalizeChartPoint(item: unknown, chartMode: ChartMode, seriesType: "primary" | "benchmark", hasBenchmark: boolean): NormalizedChartPoint | undefined {
+function normalizeChartPoint(item: unknown, chartMode: ChartMode, seriesType: "primary" | "benchmark"): NormalizedChartPoint | undefined {
   if (!isRecord(item)) return undefined;
   const timestamp = asString(item.timestamp) ?? asString(item.created_at) ?? asString(item.snapshot_at) ?? asString(item.time);
   if (!timestamp) return undefined;
   const rawValue = firstNumber(item.rawValue, item.raw_value, item.value, item.nav_usd, item.navUsd, item.unit_price, item.unitPrice);
   const normalizedValue = firstNumber(item.normalizedValue, item.normalized_value, item.indexed_nav, item.indexedNav, item.indexed, item.index);
-  const value = getChartPointValue(chartMode, seriesType, rawValue, normalizedValue, hasBenchmark);
+  const value = getChartPointValue(chartMode, seriesType, rawValue, normalizedValue);
   return {
     timestamp,
     value,
@@ -598,15 +670,14 @@ function normalizeChartPoint(item: unknown, chartMode: ChartMode, seriesType: "p
   };
 }
 
-function normalizeChartResponse(payload: unknown, chartMode: ChartMode, selectedBenchmark: string | null): { series: NormalizedChartSeries[]; warnings: string[] } {
+function normalizeChartResponse(payload: unknown, chartMode: ChartMode): { series: NormalizedChartSeries[]; warnings: string[] } {
   let primaryCount = 0;
   const usedKeys = new Set<string>();
   const series = getChartSeriesPayloadItems(payload)
     .map((item): NormalizedChartSeries | undefined => {
       if (!isRecord(item)) return undefined;
-      const rawType = asString(item.type)?.toLowerCase();
-      const rawKind = asString(item.kind)?.toLowerCase();
-      const type: "primary" | "benchmark" = rawType === "benchmark" || rawKind === "benchmark" ? "benchmark" : "primary";
+      const rawType = (asString(item.type) ?? asString(item.kind) ?? asString(item.role) ?? "").toLowerCase();
+      const type: "primary" | "benchmark" = rawType === "benchmark" ? "benchmark" : "primary";
       const symbol = asString(item.symbol)?.toUpperCase();
       const fallbackId = type === "primary" ? (primaryCount === 0 ? "primary" : `primary-${primaryCount + 1}`) : symbol;
       if (type === "primary") primaryCount += 1;
@@ -614,10 +685,10 @@ function normalizeChartResponse(payload: unknown, chartMode: ChartMode, selected
       let chartKey = type === "primary" ? "primary" : `benchmark_${(symbol ?? id).replace(/[^a-zA-Z0-9_]/g, "_")}`;
       while (usedKeys.has(chartKey)) chartKey = `${chartKey}_${usedKeys.size}`;
       usedKeys.add(chartKey);
-      const defaultLabel = type === "primary" ? (chartMode === "unit_price" ? "Unit Price" : "NAV USD") : id;
+      const defaultLabel = type === "primary" ? (chartMode === "unit_price" ? "Unit Price" : "AUM") : id;
       const label = asString(item.label) ?? symbol ?? defaultLabel;
       const points = asArray(item.points)
-        .map((point) => normalizeChartPoint(point, chartMode, type, Boolean(selectedBenchmark)))
+        .map((point) => normalizeChartPoint(point, chartMode, type))
         .filter((point): point is NormalizedChartPoint => Boolean(point))
         .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       const warnings = Array.isArray(item.warnings) ? item.warnings.map(asString).filter((warning): warning is string => Boolean(warning)) : [];
@@ -629,104 +700,142 @@ function normalizeChartResponse(payload: unknown, chartMode: ChartMode, selected
   return { series, warnings: getPayloadWarnings(payload) };
 }
 
-function buildChartRows(series: NormalizedChartSeries[]): ChartRow[] {
-  const rowsByTimestamp = new Map<string, ChartRow>();
-  series.forEach((chartSeries) => {
-    chartSeries.points.forEach((point) => {
-      if (point.value === null || !Number.isFinite(point.value)) return;
-      const row = rowsByTimestamp.get(point.timestamp) ?? { timestamp: point.timestamp, date: formatDate(point.timestamp) };
-      row[chartSeries.chartKey] = point.value;
-      rowsByTimestamp.set(point.timestamp, row);
-    });
+function getBenchmarkHistoryPayloadItems(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!isRecord(payload)) return [];
+  const directCandidates = [payload.points, payload.items, payload.data, payload.history, payload.prices, payload.results];
+  const directMatch = directCandidates.find(Array.isArray);
+  if (Array.isArray(directMatch)) return directMatch;
+  const nestedData = isRecord(payload.data) ? payload.data : {};
+  const nestedCandidates = [nestedData.points, nestedData.items, nestedData.history, nestedData.prices, nestedData.results];
+  const nestedMatch = nestedCandidates.find(Array.isArray);
+  if (Array.isArray(nestedMatch)) return nestedMatch;
+
+  const series = getChartSeriesPayloadItems(payload).find((item) => {
+    if (!isRecord(item)) return false;
+    const rawType = (asString(item.type) ?? asString(item.kind) ?? asString(item.role) ?? "").toLowerCase();
+    return rawType === "benchmark" || Array.isArray(item.points);
   });
-  return Array.from(rowsByTimestamp.values()).sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  return isRecord(series) ? asArray(series.points) : [];
 }
 
-function getPaddedDomain(rows: Array<Record<string, unknown>>, keys: string[]): [number, number] {
-  const values = rows.flatMap((row) => (
-    keys
-      .map((key) => row[key])
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
-  ));
-
-  if (values.length === 0) return [0, 1];
-
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-
-  if (min === max) {
-    const pad = Math.abs(min) * 0.05 || 1;
-    return [min - pad, max + pad];
-  }
-
-  const padding = (max - min) * 0.08;
-  return [min - padding, max + padding];
+function normalizeBenchmarkHistoryPoint(item: unknown): NormalizedChartPoint | undefined {
+  if (!isRecord(item)) return undefined;
+  const timestamp = asString(item.timestamp) ?? asString(item.created_at) ?? asString(item.snapshot_at) ?? asString(item.time) ?? asString(item.date);
+  if (!timestamp) return undefined;
+  const rawValue = firstNumber(item.rawValue, item.raw_value, item.priceUsd, item.price_usd, item.close, item.value);
+  const normalizedValue = firstNumber(item.normalizedValue, item.normalized_value, item.indexed, item.index, item.indexedValue, item.indexed_value);
+  const value = normalizedValue ?? rawValue;
+  return {
+    timestamp,
+    value,
+    rawValue,
+    normalizedValue,
+  };
 }
 
-function getDailyTicks(rows: Array<{ timestamp: string }>): string[] {
-  const seen = new Set<string>();
-  const ticks: string[] = [];
+function normalizeBenchmarkHistory(payload: unknown, symbol: string): NormalizedChartSeries {
+  const points = getBenchmarkHistoryPayloadItems(payload)
+    .map(normalizeBenchmarkHistoryPoint)
+    .filter((point): point is NormalizedChartPoint => Boolean(point))
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
 
-  rows.forEach((row) => {
-    const date = new Date(row.timestamp);
-    if (Number.isNaN(date.getTime())) return;
-    const dayKey = date.toISOString().slice(0, 10);
-    if (seen.has(dayKey)) return;
-    seen.add(dayKey);
-    ticks.push(row.timestamp);
+  return {
+    id: `benchmark:${symbol}`,
+    chartKey: "benchmark",
+    label: symbol,
+    type: "benchmark",
+    symbol,
+    points,
+    warnings: [],
+  };
+}
+
+function toUnixTimeSeconds(timestamp: string): number | null {
+  const timeMs = new Date(timestamp).getTime();
+  if (!Number.isFinite(timeMs)) return null;
+  return Math.floor(timeMs / 1000);
+}
+
+function reindexToFirstVisiblePoint(points: TimePoint[]): TimePoint[] {
+  const first = points.find((point) => typeof point.value === "number" && Number.isFinite(point.value) && point.value > 0);
+
+  if (!first) return [];
+
+  return points
+    .filter((point) => typeof point.value === "number" && Number.isFinite(point.value))
+    .map((point) => ({
+      time: point.time,
+      value: (point.value / first.value) * 100,
+    }));
+}
+
+function getDisplayPointValue(point: NormalizedChartPoint): number | null {
+  return point.rawValue ?? point.value ?? point.normalizedValue ?? null;
+}
+
+function toVisibleSeriesPoints(series?: NormalizedChartSeries, requirePositive = false): VisibleSeriesPoint[] {
+  const pointsByTime = new Map<number, VisibleSeriesPoint>();
+
+  series?.points.forEach((point) => {
+    const time = toUnixTimeSeconds(point.timestamp);
+    const value = getDisplayPointValue(point);
+    if (time === null || typeof value !== "number" || !Number.isFinite(value)) return;
+    if (requirePositive && value <= 0) return;
+    pointsByTime.set(time, { time, timestamp: point.timestamp, value });
   });
 
-  return ticks;
+  return Array.from(pointsByTime.values()).sort((left, right) => left.time - right.time);
 }
 
-function formatAxisDate(value: unknown): string {
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function createDisplaySeries(base: NormalizedChartSeries, label: string, points: VisibleSeriesPoint[]): NormalizedChartSeries {
+  return {
+    ...base,
+    label,
+    points: points.map((point) => ({
+      timestamp: point.timestamp,
+      value: point.value,
+      rawValue: point.value,
+      normalizedValue: null,
+    })),
+  };
 }
 
-function formatAxisNumber(value: number): string {
-  if (!Number.isFinite(value)) return "";
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
-  return value.toFixed(2);
+function reindexVisibleSeriesPoints(points: VisibleSeriesPoint[]): VisibleSeriesPoint[] {
+  const timestampsByTime = new Map(points.map((point) => [point.time, point.timestamp]));
+  return reindexToFirstVisiblePoint(points).map((point) => ({
+    ...point,
+    timestamp: timestampsByTime.get(point.time) ?? new Date(point.time * 1000).toISOString(),
+  }));
 }
 
-function formatAxisUsd(value: number): string {
-  if (!Number.isFinite(value)) return "";
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
-  return `$${value.toFixed(2)}`;
+function filterBenchmarkPointsToPrimaryTimes(primaryPoints: VisibleSeriesPoint[], benchmarkPoints: VisibleSeriesPoint[]): VisibleSeriesPoint[] {
+  const primaryTimes = new Set(primaryPoints.map((point) => point.time));
+  return benchmarkPoints.filter((point) => primaryTimes.has(point.time));
 }
 
-function formatTooltipDateTime(value: unknown): string {
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+function buildVisibleChartRows(primarySeries?: NormalizedChartSeries, benchmarkSeries?: NormalizedChartSeries): ChartRow[] {
+  const rowsByTime = new Map<number, ChartRow>();
+
+  primarySeries?.points.forEach((point) => {
+    if (point.value === null || !Number.isFinite(point.value)) return;
+    const time = toUnixTimeSeconds(point.timestamp);
+    if (time === null) return;
+    rowsByTime.set(time, { timestamp: point.timestamp, primary: point.value });
   });
-}
 
-function formatTooltipNumber(value: number): string {
-  if (!Number.isFinite(value)) return "N/A";
-  return value.toLocaleString("en-US", { maximumFractionDigits: 4 });
-}
-
-function formatTooltipUsd(value: number): string {
-  if (!Number.isFinite(value)) return "N/A";
-  return value.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
+  benchmarkSeries?.points.forEach((point) => {
+    if (point.value === null || !Number.isFinite(point.value)) return;
+    const time = toUnixTimeSeconds(point.timestamp);
+    if (time === null) return;
+    const row = rowsByTime.get(time);
+    if (!row || row.primary === undefined) return;
+    row.benchmark = point.value;
   });
+
+  return Array.from(rowsByTime.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([, row]) => row);
 }
 
 function getFiniteSeriesValues(series?: NormalizedChartSeries): number[] {
@@ -797,8 +906,8 @@ export function StrategiesPage(): JSX.Element {
   const navigate = useNavigate();
   const [strategies, setStrategies] = useState<StrategySummary[]>([]);
   const [chartSeries, setChartSeries] = useState<NormalizedChartSeries[]>([]);
-  const [chartWarnings, setChartWarnings] = useState<string[]>([]);
   const [benchmarkOptions, setBenchmarkOptions] = useState<BenchmarkOption[]>([]);
+  const [benchmarkCache, setBenchmarkCache] = useState<BenchmarkCache>({});
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [headerStrategy, setHeaderStrategy] = useState<StrategyGroupHeader | null>(null);
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
@@ -810,6 +919,7 @@ export function StrategiesPage(): JSX.Element {
   const [isLoadingBenchmarks, setIsLoadingBenchmarks] = useState(true);
   const [isLoadingHeader, setIsLoadingHeader] = useState(false);
   const [isLoadingNav, setIsLoadingNav] = useState(false);
+  const [isLoadingBenchmarkHistory, setIsLoadingBenchmarkHistory] = useState(false);
   const [isLoadingTree, setIsLoadingTree] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -819,7 +929,6 @@ export function StrategiesPage(): JSX.Element {
   const [treeError, setTreeError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
   const [chartMode, setChartMode] = useState<ChartMode>(() => readSavedChartMode());
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
   const [isBenchmarkMenuOpen, setIsBenchmarkMenuOpen] = useState(false);
@@ -868,7 +977,6 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     let active = true;
     setIsLoadingBenchmarks(true);
-    setBenchmarkError(null);
     fetchJson("/api/v1/benchmarks")
       .then((payload) => {
         if (!active) return;
@@ -876,13 +984,11 @@ export function StrategiesPage(): JSX.Element {
         const availableSymbols = normalized.map((benchmark) => benchmark.symbol);
         setBenchmarkOptions(normalized);
         setSelectedBenchmark(normalizeSelectedBenchmark(readSavedBenchmark(), availableSymbols));
-        setBenchmarkError(normalized.length === 0 ? "Benchmark data unavailable for selected range." : null);
       })
       .catch(() => {
         if (!active) return;
         setBenchmarkOptions([]);
         setSelectedBenchmark(null);
-        setBenchmarkError("Loading benchmarks failed.");
       })
       .finally(() => {
         if (active) setIsLoadingBenchmarks(false);
@@ -920,7 +1026,7 @@ export function StrategiesPage(): JSX.Element {
     if (isLoadingHeader) {
       return [
         "UnitPrice",
-        "NAV",
+        "AUM",
         "Total Return",
         "APY / CAGR",
         "Max DD",
@@ -936,7 +1042,7 @@ export function StrategiesPage(): JSX.Element {
     const warningsCount = headerStrategy?.warnings?.length ?? 0;
     const metrics: Metric[] = [
       { label: "UnitPrice", value: formatNumberOrNA(source?.unitPrice), hint: "Header unit price" },
-      { label: "NAV", value: formatUsdOrNA(source?.navUsd), hint: "Group net asset value" },
+      { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Latest assets under management reported by ANMI Track" },
       { label: "Total Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Header total return" },
       { label: "APY / CAGR", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
       { label: "Max DD", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
@@ -1029,29 +1135,23 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     if (!selectedStrategy) {
       setChartSeries([]);
-      setChartWarnings([]);
       return;
     }
     let active = true;
     setIsLoadingNav(true);
     setNavError(null);
-    setChartWarnings([]);
     const params = new URLSearchParams({
       scope: "group",
       metric: chartMode === "nav_usd" ? "nav_usd" : "unit_price",
-      normalize: chartMode === "unit_price" ? "true" : "false",
+      normalize: "false",
     });
-    if (chartMode === "unit_price" && selectedBenchmark) {
-      params.set("benchmarks", selectedBenchmark);
-    }
     fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/chart?${params.toString()}`)
       .then((payload) => {
         if (!active) return;
-        const normalized = normalizeChartResponse(payload, chartMode, chartMode === "unit_price" ? selectedBenchmark : null);
+        const normalized = normalizeChartResponse(payload, chartMode);
         const hasPrimaryPoints = normalized.series.some((series) => series.type === "primary" && series.points.length > 0);
         if (hasPrimaryPoints) {
           setChartSeries(normalized.series);
-          setChartWarnings(normalized.warnings);
           setNavError(null);
         } else {
           setNavError("Unable to load primary strategy series.");
@@ -1059,7 +1159,6 @@ export function StrategiesPage(): JSX.Element {
       })
       .catch(() => {
         if (!active) return;
-        setChartWarnings([]);
         setNavError("Unable to load chart data.");
       })
       .finally(() => {
@@ -1068,7 +1167,35 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [chartMode, selectedBenchmark, selectedStrategy]);
+  }, [chartMode, selectedStrategy]);
+
+  useEffect(() => {
+    if (chartMode !== "unit_price" || !selectedBenchmark || benchmarkCache[selectedBenchmark]) {
+      setIsLoadingBenchmarkHistory(false);
+      return;
+    }
+
+    let active = true;
+    setIsLoadingBenchmarkHistory(true);
+    fetchJson(`/api/v1/benchmarks/${encodeURIComponent(selectedBenchmark)}/history?normalize=true`)
+      .then((payload) => {
+        if (!active) return;
+        const normalized = normalizeBenchmarkHistory(payload, selectedBenchmark);
+        setBenchmarkCache((current) => ({ ...current, [selectedBenchmark]: normalized }));
+      })
+      .catch(() => {
+        if (import.meta.env.DEV) {
+          console.debug(`Benchmark history unavailable for ${selectedBenchmark}.`);
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoadingBenchmarkHistory(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [benchmarkCache, chartMode, selectedBenchmark]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -1107,16 +1234,11 @@ export function StrategiesPage(): JSX.Element {
       return;
     }
     let active = true;
-    const params = new URLSearchParams({
-      groupId: selectedStrategy.id,
-      nodeId: selectedTreeNode.id,
-      nodeType: selectedTreeNode.type,
-    });
     setIsLoadingDetails(true);
     setIsLoadingHistory(true);
     setDetailsError(null);
     setHistoryError(null);
-    fetchJson(`/api/v1/explorer/details?${params.toString()}`)
+    fetchJson(buildExplorerDetailsUrl("/api/v1", selectedStrategy.id, selectedTreeNode))
       .then((payload) => {
         if (active) setNodeDetails(normalizeDetails(payload, selectedTreeNode));
       })
@@ -1130,9 +1252,7 @@ export function StrategiesPage(): JSX.Element {
         if (active) setIsLoadingDetails(false);
       });
 
-    const historyParams = new URLSearchParams(params);
-    historyParams.set("limit", "50");
-    fetchJson(`/api/v1/explorer/history?${historyParams.toString()}`)
+    fetchJson(buildExplorerHistoryUrl("/api/v1", selectedStrategy.id, selectedTreeNode, 50))
       .then((payload) => {
         if (active) setHistoryRows(normalizeHistory(payload));
       })
@@ -1152,48 +1272,35 @@ export function StrategiesPage(): JSX.Element {
   }, [selectedStrategy, selectedTreeNode]);
 
   const analytics = useMemo(() => {
-    const rawPrimarySeries = chartSeries.find((series) => series.type === "primary");
-    const primarySeries = rawPrimarySeries
+    const rawPrimarySeries = chartSeries.find((series) => series.type === "primary" && series.points.length > 0);
+    const basePrimarySeries = rawPrimarySeries
       ? {
           ...rawPrimarySeries,
-          label: chartMode === "nav_usd" ? "NAV USD" : selectedBenchmark ? "Unit Price Index" : "Unit Price",
+          chartKey: "primary",
+          label: chartMode === "nav_usd" ? "AUM" : "Unit Price",
         }
       : undefined;
-    const selectedBenchmarkSeries = chartMode === "unit_price" && selectedBenchmark
-      ? chartSeries.find((series) => series.type === "benchmark" && (series.symbol === selectedBenchmark || series.id.toUpperCase().includes(selectedBenchmark)))
+    const selectedBenchmarkSeries = chartMode === "unit_price" && selectedBenchmark ? benchmarkCache[selectedBenchmark] : undefined;
+    const rawBenchmarkSeries = selectedBenchmarkSeries ? { ...selectedBenchmarkSeries, chartKey: "benchmark", label: selectedBenchmarkSeries.symbol ?? selectedBenchmark ?? selectedBenchmarkSeries.label } : undefined;
+    const hasBenchmarkOverlay = chartMode === "unit_price" && Boolean(selectedBenchmark);
+    const primaryVisiblePoints = toVisibleSeriesPoints(basePrimarySeries, chartMode === "unit_price");
+    const benchmarkVisiblePoints = hasBenchmarkOverlay && rawBenchmarkSeries ? filterBenchmarkPointsToPrimaryTimes(primaryVisiblePoints, toVisibleSeriesPoints(rawBenchmarkSeries, true)) : [];
+    const reindexedBenchmarkPoints = reindexVisibleSeriesPoints(benchmarkVisiblePoints);
+    const primarySeries = basePrimarySeries
+      ? createDisplaySeries(
+          basePrimarySeries,
+          hasBenchmarkOverlay ? "Unit Price Index" : basePrimarySeries.label,
+          hasBenchmarkOverlay ? reindexVisibleSeriesPoints(primaryVisiblePoints) : primaryVisiblePoints,
+        )
       : undefined;
-    const benchmarkSeries = selectedBenchmarkSeries
-      ? [{ ...selectedBenchmarkSeries, label: selectedBenchmarkSeries.symbol ?? selectedBenchmark ?? selectedBenchmarkSeries.label }]
-      : [];
-    const visibleSeries = [primarySeries, ...benchmarkSeries].filter((series): series is NormalizedChartSeries => Boolean(series));
-    const chartData = buildChartRows(visibleSeries);
-    const visibleSeriesKeys = visibleSeries.map((series) => series.chartKey);
-    const yDomain = getPaddedDomain(chartData, visibleSeriesKeys);
-    const xTicks = getDailyTicks(chartData);
+    const benchmarkSeries = rawBenchmarkSeries && hasBenchmarkOverlay && reindexedBenchmarkPoints.length > 0
+      ? createDisplaySeries(rawBenchmarkSeries, `${rawBenchmarkSeries.symbol ?? selectedBenchmark ?? rawBenchmarkSeries.label} Index`, reindexedBenchmarkPoints)
+      : undefined;
+    const chartData = buildVisibleChartRows(primarySeries, benchmarkSeries);
     const values = getFiniteSeriesValues(primarySeries);
     const strategyReturns = toReturns(values);
-    const correlations = primarySeries
-      ? benchmarkSeries
-          .map((series) => {
-            const correlation = pearsonAligned(primarySeries, series);
-            return correlation === null ? null : `${series.label} ${correlation.toFixed(2)}`;
-          })
-          .filter((item): item is string => Boolean(item))
-      : [];
-    const primaryHasData = primarySeries?.points.some((point) => typeof point.value === "number" && Number.isFinite(point.value)) ?? false;
-    const benchmarkValues = selectedBenchmarkSeries?.points.filter((point) => typeof point.value === "number" && Number.isFinite(point.value)) ?? [];
-    const benchmarkHasData = selectedBenchmarkSeries ? benchmarkValues.length > 0 : true;
-    const benchmarkHasPartialCoverage = selectedBenchmarkSeries
-      ? selectedBenchmarkSeries.points.some((point) => point.value === null || !Number.isFinite(point.value)) && benchmarkValues.length > 0
-      : false;
-    let benchmarkWarning: string | null = null;
-    if (chartMode === "unit_price" && selectedBenchmark && primaryHasData) {
-      if (!selectedBenchmarkSeries || !benchmarkHasData) {
-        benchmarkWarning = "Selected benchmark is unavailable for this range.";
-      } else if (benchmarkHasPartialCoverage || chartWarnings.length > 0) {
-        benchmarkWarning = "Benchmark coverage is partial for this range.";
-      }
-    }
+    const correlation = primarySeries && benchmarkSeries ? pearsonAligned(primarySeries, benchmarkSeries) : null;
+    const correlations = correlation === null || !benchmarkSeries ? [] : [`${benchmarkSeries.label} ${correlation.toFixed(2)}`];
     const advancedMetrics: Metric[] = [
       {
         label: "Correlation to markets",
@@ -1208,11 +1315,11 @@ export function StrategiesPage(): JSX.Element {
       {
         label: "Optimal-F",
         value: formatPercent(optimalF(strategyReturns)),
-        hint: "Prototype estimate based on NAV or unit price returns.",
+        hint: "Prototype estimate based on AUM or unit price returns.",
       },
     ];
-    return { advancedMetrics, benchmarkSeries, benchmarkWarning, chartData, primarySeries, xTicks, yDomain };
-  }, [chartMode, chartSeries, chartWarnings, selectedBenchmark]);
+    return { advancedMetrics, benchmarkSeries, chartData };
+  }, [benchmarkCache, chartMode, chartSeries, selectedBenchmark]);
 
   function handleStrategyChange(nextId: string): void {
     setIsSelectorOpen(false);
@@ -1343,13 +1450,13 @@ export function StrategiesPage(): JSX.Element {
               <div>
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
                   <LineChart className="h-4 w-4 text-cyan-200" />
-                  {chartMode === "nav_usd" ? "NAV USD" : selectedBenchmark ? "Unit Price Index" : "Unit Price"}
+                  {chartMode === "nav_usd" ? "AUM" : selectedBenchmark ? "Unit Price Index" : "Unit Price"}
                 </div>
                 <p className="mt-2 text-sm text-slate-500">
                   {chartMode === "nav_usd"
-                    ? "Group NAV in dollars."
+                    ? "Total value of assets under management."
                     : selectedBenchmark
-                      ? "Unit price and selected benchmark indexed for comparison."
+                      ? "Unit price and selected benchmark indexed from the first visible strategy point."
                       : "Strategy group unit price history."}
                 </p>
               </div>
@@ -1357,7 +1464,7 @@ export function StrategiesPage(): JSX.Element {
                 <SegmentedControl
                   value={chartMode}
                   options={[
-                    { value: "nav_usd", label: "NAV USD" },
+                    { value: "nav_usd", label: "AUM" },
                     { value: "unit_price", label: "Unit Price" },
                   ]}
                   onChange={handleChartModeChange}
@@ -1371,6 +1478,7 @@ export function StrategiesPage(): JSX.Element {
                     >
                       <span>Benchmark</span>
                       <span className="text-cyan-100">{selectedBenchmark ?? "None"}</span>
+                      {isLoadingBenchmarkHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" /> : null}
                       <ChevronDown className={cn("h-3.5 w-3.5 text-cyan-200 transition", isBenchmarkMenuOpen ? "rotate-180" : null)} />
                     </button>
                     {isBenchmarkMenuOpen ? (
@@ -1409,87 +1517,13 @@ export function StrategiesPage(): JSX.Element {
                 ) : null}
               </div>
             </div>
-            {benchmarkError ? (
-              <div className="mb-4 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-4 py-3 text-xs text-amber-100">{benchmarkError}</div>
-            ) : null}
-            {analytics.benchmarkWarning ? (
-              <div className="mb-4 text-xs text-amber-200/75">{analytics.benchmarkWarning}</div>
-            ) : null}
-
-            <div className="relative h-[420px] min-h-[320px]">
-              {analytics.chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={analytics.chartData} margin={{ left: 0, right: 12, top: 10, bottom: 0 }}>
-                    <CartesianGrid stroke="rgba(148,163,184,0.14)" vertical={false} />
-                    <XAxis dataKey="timestamp" ticks={analytics.xTicks} tickFormatter={formatAxisDate} stroke="#64748b" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
-                    <YAxis
-                      domain={analytics.yDomain}
-                      tickFormatter={chartMode === "nav_usd" ? formatAxisUsd : formatAxisNumber}
-                      stroke="#64748b"
-                      tickLine={false}
-                      axisLine={false}
-                      tick={{ fontSize: 11 }}
-                      width={66}
-                    />
-                    <Tooltip
-                      contentStyle={{ background: "#07111f", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, color: "#e2e8f0" }}
-                      labelStyle={{ color: "#bae6fd" }}
-                      labelFormatter={formatTooltipDateTime}
-                      formatter={(value, name) => {
-                        if (typeof value !== "number") {
-                          return [String(value), name];
-                        }
-                        if (chartMode === "nav_usd") {
-                          return [formatTooltipUsd(value), name];
-                        }
-                        if (analytics.primarySeries && name === analytics.primarySeries.label) {
-                          return [formatTooltipNumber(value), name];
-                        }
-                        return [value.toLocaleString("en-US", { maximumFractionDigits: 2 }), name];
-                      }}
-                    />
-                    <Legend />
-                    {analytics.primarySeries ? (
-                      <Area
-                        type="monotone"
-                        dataKey={analytics.primarySeries.chartKey}
-                        name={analytics.primarySeries.label}
-                        stroke="#22d3ee"
-                        fill="rgba(34,211,238,0.16)"
-                        strokeWidth={3}
-                        dot={false}
-                        connectNulls={false}
-                      />
-                    ) : null}
-                    {analytics.benchmarkSeries.map((series, index) => (
-                      <Line
-                        key={series.chartKey}
-                        type="monotone"
-                        dataKey={series.chartKey}
-                        name={series.label}
-                        stroke={chartColors[index % chartColors.length]}
-                        strokeWidth={1.8}
-                        dot={false}
-                        connectNulls={false}
-                      />
-                    ))}
-                  </ComposedChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="grid h-full place-items-center rounded-xl border border-white/10 bg-white/[0.025] text-sm text-slate-500">
-                  {isLoadingNav ? "Loading chart..." : navError ?? "Unable to load primary strategy series."}
-                </div>
-              )}
-              {isLoadingNav && analytics.chartData.length > 0 ? (
-                <div className="absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-slate-950/55 backdrop-blur-[2px]">
-                  <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/90 px-4 py-2 text-xs font-medium text-slate-300 shadow-xl shadow-black/40">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
-                    Loading chart...
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            {navError && analytics.chartData.length > 0 ? (
+            <StrategyTimeSeriesChart
+              data={analytics.chartData}
+              mode={chartMode}
+              benchmarkSymbol={chartMode === "unit_price" ? selectedBenchmark : null}
+              loading={isLoadingNav}
+            />
+            {navError ? (
               <div className="mt-3 text-xs text-amber-200/75">{navError}</div>
             ) : null}
           </div>
@@ -1517,7 +1551,7 @@ export function StrategiesPage(): JSX.Element {
             </table>
           </div>
           <p className="mt-3 text-xs leading-5 text-slate-500">
-            Optimal-F note: Prototype estimate based on NAV or unit price returns. Production calculation should use trade-level returns or risk-normalized R-multiples.
+            Optimal-F note: Prototype estimate based on AUM or unit price returns. Production calculation should use trade-level returns or risk-normalized R-multiples.
           </p>
         </section>
 
