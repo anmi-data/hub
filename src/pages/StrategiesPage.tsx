@@ -45,18 +45,32 @@ type StrategyGroupHeader = {
 type ExplorerNode = {
   id: string;
   type: string;
-  entityId?: string;
+  entityId: string;
   strategyId?: string;
   accountId?: string;
   protocolType?: string;
+  defaultDataset?: string;
   meta?: Record<string, unknown>;
+};
+
+type StructuredWarning = {
+  level: "info" | "warning" | "error" | string;
+  code: string;
+  message: string;
+  nodeId?: string | null;
+  entityId?: string | null;
 };
 
 type ExplorerTreeNode = ExplorerNode & {
   uiKey: string;
   label: string;
+  headerFields: Array<{ key: string; label: string; value: string }>;
+  summaryCards: Array<{ label: string; value: string; tone?: "default" | "good" | "warning" | "risk" }>;
   count?: number | null;
   status?: string | null;
+  collectionStatus?: string | null;
+  hasCollectionError?: boolean;
+  latestErrorMessage?: string | null;
   updatedAt?: string | null;
   children?: ExplorerTreeNode[];
 };
@@ -66,9 +80,11 @@ type ExplorerDetails = {
   subtitle?: string | null;
   type: string;
   status?: string | null;
+  headerFields: Array<{ key: string; label: string; value: string }>;
   summaryCards: Array<{ label: string; value: string; tone?: "default" | "good" | "warning" | "risk" }>;
   latest?: Record<string, unknown> | null;
   datasets: HistoryDataset[];
+  warnings: string[];
 };
 
 type HistoryDataset = {
@@ -80,7 +96,9 @@ type HistoryDataset = {
 type ExplorerHistoryColumn = {
   key: string;
   label: string;
-  type?: string | null;
+  type: "string" | "number" | "boolean" | "datetime" | string;
+  format?: "text" | "number" | "currency" | "percent" | "datetime" | "boolean" | "address" | "tags" | string;
+  unit?: "USD" | string;
 };
 
 type ExplorerHistoryPagination = {
@@ -380,24 +398,40 @@ function normalizeTreeNode(item: unknown, parentPath: string, index = 0): Explor
   const pathPart = `${type}:${id}:${label}:${index}`;
   const uiKey = parentPath ? `${parentPath}/${pathPart}` : pathPart;
   const meta = isRecord(item.meta) ? item.meta : {};
-  const entityId = asString(item.entityId) ?? asString(item.entity_id) ?? asString(item.businessId) ?? asString(item.business_id) ?? asString(meta.entityId) ?? asString(meta.entity_id);
+  const fallbackEntityId = id.includes(":") ? id.slice(id.indexOf(":") + 1) : id;
+  const entityId = asString(item.entityId) ?? asString(item.entity_id) ?? asString(meta.entityId) ?? asString(meta.entity_id) ?? fallbackEntityId;
   const strategyId = asString(item.strategyId) ?? asString(item.strategy_id) ?? asString(meta.strategyId) ?? asString(meta.strategy_id);
   const accountId = asString(item.accountId) ?? asString(item.account_id) ?? asString(meta.accountId) ?? asString(meta.account_id);
   const protocolType = asString(item.protocolType) ?? asString(item.protocol_type) ?? asString(item.protocol) ?? asString(meta.protocolType) ?? asString(meta.protocol_type) ?? asString(meta.protocol);
+  const defaultDataset = asString(item.defaultDataset) ?? asString(item.default_dataset);
   const children = asArray(item.children)
     .map((child, childIndex) => normalizeTreeNode(child, uiKey, childIndex))
     .filter((node): node is ExplorerTreeNode => Boolean(node));
-  const node: ExplorerTreeNode = { id, type, label, uiKey };
+  const node: ExplorerTreeNode = {
+    id,
+    type,
+    entityId,
+    label,
+    uiKey,
+    headerFields: normalizeHeaderFields(item.header),
+    summaryCards: normalizeSummaryCards(item.summary, type, protocolType?.toLowerCase()),
+  };
   const count = firstNumber(item.count, item.rows, item.total);
   const status = asString(item.status);
+  const collectionStatus = asString(item.collectionStatus) ?? asString(item.collection_status);
+  const latestErrorMessage = asString(item.latestErrorMessage) ?? asString(item.latest_error_message);
   const updatedAt = asString(item.updatedAt) ?? asString(item.updated_at) ?? asString(item.timestamp);
   if (count !== null) node.count = count;
   if (status) node.status = status;
+  if (collectionStatus) node.collectionStatus = collectionStatus;
+  if (typeof item.hasCollectionError === "boolean") node.hasCollectionError = item.hasCollectionError;
+  if (typeof item.has_collection_error === "boolean") node.hasCollectionError = item.has_collection_error;
+  if (latestErrorMessage) node.latestErrorMessage = latestErrorMessage;
   if (updatedAt) node.updatedAt = updatedAt;
-  if (entityId) node.entityId = entityId;
   if (strategyId) node.strategyId = strategyId;
   if (accountId) node.accountId = accountId;
   if (protocolType) node.protocolType = protocolType.toLowerCase();
+  if (defaultDataset) node.defaultDataset = defaultDataset;
   if (Object.keys(meta).length > 0) node.meta = meta;
   if (children.length > 0) node.children = children;
   return node;
@@ -416,6 +450,37 @@ function normalizeTree(payload: unknown): ExplorerTreeNode[] {
   return single ? [single] : [];
 }
 
+function normalizeStructuredWarning(item: unknown): StructuredWarning | undefined {
+  if (!isRecord(item)) return undefined;
+  const message = asString(item.message);
+  if (!message) return undefined;
+  return {
+    level: asString(item.level) ?? "warning",
+    code: asString(item.code) ?? "warning",
+    message,
+    nodeId: asString(item.nodeId) ?? asString(item.node_id) ?? null,
+    entityId: asString(item.entityId) ?? asString(item.entity_id) ?? null,
+  };
+}
+
+function getTreeStructuredWarnings(payload: unknown): StructuredWarning[] {
+  if (!isRecord(payload)) return [];
+  const dataQuality = isRecord(payload.dataQuality) ? payload.dataQuality : isRecord(payload.data_quality) ? payload.data_quality : {};
+  const rawStructured = Array.isArray(dataQuality.structuredWarnings)
+    ? dataQuality.structuredWarnings
+    : Array.isArray(dataQuality.structured_warnings)
+      ? dataQuality.structured_warnings
+      : [];
+  const structured = rawStructured.map(normalizeStructuredWarning).filter((item): item is StructuredWarning => Boolean(item));
+  if (structured.length > 0) return structured;
+
+  const rawWarnings = Array.isArray(dataQuality.warnings) ? dataQuality.warnings : Array.isArray(payload.warnings) ? payload.warnings : [];
+  return rawWarnings
+    .map(asString)
+    .filter((message): message is string => Boolean(message))
+    .map((message) => ({ level: "warning", code: "warning", message, nodeId: null, entityId: null }));
+}
+
 function findTreeNode(nodes: ExplorerTreeNode[], uiKey: string | null): ExplorerTreeNode | undefined {
   if (!uiKey) return undefined;
   for (const node of nodes) {
@@ -431,28 +496,21 @@ function getFirstTreeNode(nodes: ExplorerTreeNode[]): ExplorerTreeNode | undefin
 }
 
 function getEntityId(node: ExplorerNode): string {
-  if (node.entityId) return node.entityId;
-
-  const separatorIndex = node.id.indexOf(":");
-  return separatorIndex >= 0 ? node.id.slice(separatorIndex + 1) : node.id;
+  return node.entityId;
 }
 
 function getDefaultDatasetForNode(node: ExplorerNode): string {
+  if (node.defaultDataset) return node.defaultDataset;
   switch (node.type) {
-    case "strategy_group":
-    case "strategy":
-    case "account":
-      return "snapshots";
-
     case "balance_group":
       return "balances";
-
     case "position_group":
       if (node.protocolType === "lp") return "positions_lp";
       if (node.protocolType === "futures" || node.protocolType === "perp") return "positions_futures";
-      if (node.protocolType === "hedge") return "hedge";
       return "positions_generic";
-
+    case "strategy_group":
+    case "strategy":
+    case "account":
     default:
       return "snapshots";
   }
@@ -525,7 +583,16 @@ function normalizeDatasetItem(item: unknown): HistoryDataset | undefined {
 function normalizeDatasets(source: Record<string, unknown>, node?: ExplorerTreeNode): HistoryDataset[] {
   const history = isRecord(source.history) ? source.history : {};
   const data = isRecord(source.data) ? source.data : {};
-  const candidates = [source.datasets, source.historyDatasets, source.availableDatasets, history.datasets, data.datasets];
+  const availableHistory = isRecord(source.availableHistory) ? source.availableHistory : {};
+  const candidates = [
+    source.availableHistory,
+    availableHistory.datasets,
+    source.datasets,
+    source.historyDatasets,
+    source.availableDatasets,
+    history.datasets,
+    data.datasets,
+  ];
   const rawDatasets = candidates.find(Array.isArray);
   const datasets = (Array.isArray(rawDatasets) ? rawDatasets : [])
     .map(normalizeDatasetItem)
@@ -535,7 +602,41 @@ function normalizeDatasets(source: Record<string, unknown>, node?: ExplorerTreeN
   return [{ id: fallbackId, label: formatDatasetLabel(fallbackId) }];
 }
 
-function normalizeSummaryCards(value: unknown): ExplorerDetails["summaryCards"] {
+function getSummaryPriorityKeys(nodeType?: string, protocolType?: string): string[] {
+  if (nodeType === "account") {
+    return [
+      "navUsd", "walletNavUsd", "walletWeight", "lpNavUsd", "lpFeesUsd", "lpWeight", "perpNavUsd", "perpWeight",
+      "leverage", "unrealizedPnlUsd", "realizedPnlUsd", "fundingUsd", "accountWeight", "marginUsage", "updatedAt",
+    ];
+  }
+  if (nodeType === "position_group" && protocolType === "lp") {
+    return ["lpNavUsd", "feesUsd", "unclaimedFeesUsd", "inRange", "rangeUtilization", "feesYield", "lpPnlUsd", "impermanentRisk", "updatedAt"];
+  }
+  if (nodeType === "position_group" && (protocolType === "futures" || protocolType === "perp")) {
+    return ["notionalUsd", "marginUsd", "unrealizedPnlUsd", "realizedPnlUsd", "pnlPct", "fundingUsd", "fundingRate", "liquidationPrice", "distanceToLiquidation", "updatedAt"];
+  }
+  if (nodeType === "balance_group") {
+    return ["aumUsd", "stablecoinShare", "volatileAssetExposure", "updatedAt"];
+  }
+  return [];
+}
+
+function isInternalSummaryKey(key: string): boolean {
+  return key.startsWith("_") || ["raw", "debug", "meta", "metadata"].includes(key);
+}
+
+function orderSummaryEntries(entries: Array<[string, unknown]>, nodeType?: string, protocolType?: string): Array<[string, unknown]> {
+  const priority = getSummaryPriorityKeys(nodeType, protocolType);
+  if (priority.length === 0) return entries.filter(([key]) => !isInternalSummaryKey(key));
+  const byKey = new Map(entries);
+  const prioritized = priority
+    .filter((key) => byKey.has(key))
+    .map((key): [string, unknown] => [key, byKey.get(key)]);
+  const rest = entries.filter(([key]) => !priority.includes(key) && !isInternalSummaryKey(key));
+  return [...prioritized, ...rest];
+}
+
+function normalizeSummaryCards(value: unknown, nodeType?: string, protocolType?: string): ExplorerDetails["summaryCards"] {
   if (Array.isArray(value)) {
     return value
       .map((item): ExplorerDetails["summaryCards"][number] | undefined => {
@@ -553,37 +654,93 @@ function normalizeSummaryCards(value: unknown): ExplorerDetails["summaryCards"] 
   }
 
   if (isRecord(value)) {
-    return Object.entries(value).map(([key, item]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, item) }));
+    return orderSummaryEntries(Object.entries(value), nodeType, protocolType)
+      .map(([key, item]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, item) }));
   }
 
   return [];
 }
 
+function formatExplorerHeaderValue(field: string, value: unknown, format?: string | null, unit?: string | null): string {
+  if (value === null || value === undefined) return formatEmptyValue();
+  const normalizedFormat = format?.trim().toLowerCase();
+  if (normalizedFormat === "usd" || normalizedFormat === "currency") return formatUsdOrNA(asNumber(value));
+  if (normalizedFormat === "percent" || normalizedFormat === "percentage") {
+    const numericValue = asNumber(value);
+    return numericValue === undefined ? formatValue(value) : formatPercent(numericValue);
+  }
+  if (normalizedFormat === "datetime") return formatDateTime(value);
+  if (normalizedFormat === "address") return formatAddress(value);
+  if (normalizedFormat === "tags") return formatTags(value);
+  if (normalizedFormat === "boolean") return typeof value === "boolean" ? (value ? "Yes" : "No") : formatValue(value);
+  if (normalizedFormat === "number") return formatNumberOrNA(asNumber(value));
+  const formatted = formatFieldValue(field, value);
+  return unit && formatted !== "N/A" ? `${formatted} ${unit}` : formatted;
+}
+
+function normalizeHeaderFields(value: unknown): ExplorerDetails["headerFields"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): ExplorerDetails["headerFields"][number] | undefined => {
+      if (!isRecord(item)) return undefined;
+      const key = asString(item.key) ?? asString(item.id) ?? asString(item.name);
+      if (!key) return undefined;
+      const label = asString(item.label) ?? formatMetricLabel(key);
+      return {
+        key,
+        label: formatMetricLabel(label),
+        value: formatExplorerHeaderValue(key, item.value, asString(item.format) ?? null, asString(item.unit) ?? null),
+      };
+    })
+    .filter((item): item is ExplorerDetails["headerFields"][number] => Boolean(item));
+}
+
 function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDetails {
   const source = unwrapDetailsPayload(payload);
-  const summarySource = source.summaryCards ?? source.summary ?? source.cards ?? source.metrics;
-  const summaryCards = normalizeSummaryCards(summarySource);
+  const responseNode = isRecord(source.node) ? source.node : {};
+  const headerFields = normalizeHeaderFields(source.header);
+  const detailsType = asString(source.type) ?? asString(responseNode.type) ?? node?.type ?? "node";
+  const detailsProtocolType = asString(source.protocolType) ?? asString(source.protocol_type) ?? asString(responseNode.protocolType) ?? asString(responseNode.protocol_type) ?? node?.protocolType;
+  const summaryCards = [
+    ...normalizeSummaryCards(source.summary, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.summaryCards, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.cards, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.metrics, detailsType, detailsProtocolType),
+  ];
   const latest = isRecord(source.latest) ? source.latest : isRecord(source.latestSnapshot) ? source.latestSnapshot : isRecord(source.snapshot) ? source.snapshot : null;
   const latestCards = summaryCards.length === 0 && latest
     ? Object.entries(latest).slice(0, 8).map(([key, value]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, value) }))
     : [];
+  const dataQuality = isRecord(source.dataQuality) ? source.dataQuality : isRecord(source.data_quality) ? source.data_quality : {};
+  const warnings = [
+    ...(Array.isArray(source.warnings) ? source.warnings : []),
+    ...(Array.isArray(dataQuality.warnings) ? dataQuality.warnings : []),
+  ].map(asString).filter((item): item is string => Boolean(item));
   return {
-    title: asString(source.title) ?? asString(source.label) ?? asString(source.name) ?? node?.label ?? "Node details",
+    title: asString(source.title) ?? asString(responseNode.label) ?? asString(source.label) ?? asString(source.name) ?? node?.label ?? "Node details",
     subtitle: asString(source.subtitle) ?? asString(source.description) ?? null,
-    type: asString(source.type) ?? node?.type ?? "node",
-    status: asString(source.status) ?? node?.status ?? null,
-    summaryCards: summaryCards.length > 0 ? summaryCards : latestCards,
+    type: detailsType,
+    status: asString(source.status) ?? asString(responseNode.status) ?? node?.status ?? null,
+    headerFields: headerFields.length > 0 ? headerFields : node?.headerFields ?? [],
+    summaryCards: summaryCards.length > 0 ? summaryCards : node?.summaryCards.length ? node.summaryCards : latestCards,
     latest,
     datasets: normalizeDatasets(source, node),
+    warnings,
   };
 }
 
 function normalizeHistoryColumn(item: unknown): ExplorerHistoryColumn | undefined {
-  if (typeof item === "string") return { key: item, label: formatMetricLabel(item) };
+  if (typeof item === "string") return { key: item, label: formatMetricLabel(item), type: "string" };
   if (!isRecord(item)) return undefined;
   const key = asString(item.key) ?? asString(item.id) ?? asString(item.name);
   if (!key) return undefined;
-  return { key, label: formatMetricLabel(asString(item.label) ?? key), type: asString(item.type) ?? null };
+  return {
+    key,
+    label: formatMetricLabel(asString(item.label) ?? key),
+    type: asString(item.type) ?? "string",
+    format: asString(item.format),
+    unit: asString(item.unit),
+  };
 }
 
 function unwrapHistoryPayload(payload: unknown): Record<string, unknown> {
@@ -604,8 +761,7 @@ function normalizeHistory(
   const normalizedColumns = (Array.isArray(source.columns) ? source.columns : [])
     .map(normalizeHistoryColumn)
     .filter((column): column is ExplorerHistoryColumn => Boolean(column));
-  const rowKeys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-  const columns = normalizedColumns.length > 0 ? normalizedColumns : rowKeys.map((key) => ({ key, label: formatMetricLabel(key), type: null }));
+  const columns = normalizedColumns;
   const pagination = isRecord(source.pagination) ? source.pagination : {};
   const page = firstNumber(pagination.page) ?? fallbackPage;
   const pageSize = firstNumber(pagination.pageSize, pagination.page_size) ?? fallbackPageSize;
@@ -615,7 +771,7 @@ function normalizeHistory(
   const safePage = Math.max(1, Math.min(page, totalPages));
 
   return {
-    columns: orderHistoryColumns(columns),
+    columns: columns.filter((column) => !isStatusField(column.key) && !isMessageField(column.key)),
     rows,
     pagination: {
       page: safePage,
@@ -625,7 +781,7 @@ function normalizeHistory(
       hasNextPage: typeof pagination.hasNextPage === "boolean" ? pagination.hasNextPage : safePage < totalPages,
       hasPreviousPage: typeof pagination.hasPreviousPage === "boolean" ? pagination.hasPreviousPage : safePage > 1,
     },
-    search: asString(source.search) ?? fallbackSearch,
+    search: asString(source.search) ?? (isRecord(source.search) ? asString(source.search.query) : undefined) ?? fallbackSearch,
   };
 }
 
@@ -741,14 +897,55 @@ function formatValue(value: unknown): string {
   return "N/A";
 }
 
+function formatEmptyValue(): string {
+  return "-";
+}
+
+function formatAddress(value: unknown): string {
+  const address = asString(value);
+  if (!address) return formatEmptyValue();
+  return address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-4)}` : address;
+}
+
+function formatTags(value: unknown): string {
+  if (Array.isArray(value)) {
+    const tags = value.map((item) => formatValue(item)).filter((item) => item !== "N/A");
+    return tags.length > 0 ? tags.join(", ") : formatEmptyValue();
+  }
+  return formatValue(value);
+}
+
 function isAumField(value: string): boolean {
   const normalized = value.replace(/[\s_-]+/g, "").toLowerCase();
   return normalized === "nav" || normalized === "navusd" || normalized === "aum" || normalized === "aumusd";
 }
 
+function isUsdField(value: string): boolean {
+  const normalized = value.replace(/[\s_-]+/g, "").toLowerCase();
+  return normalized.endsWith("usd") || normalized.includes("usd");
+}
+
+function isPercentField(value: string): boolean {
+  const normalized = value.replace(/[\s_-]+/g, "").toLowerCase();
+  return (
+    normalized.endsWith("pct") ||
+    normalized.includes("weight") ||
+    normalized.includes("share") ||
+    normalized.includes("rate") ||
+    normalized.includes("yield") ||
+    normalized.includes("utilization") ||
+    normalized.includes("usage")
+  );
+}
+
 function formatFieldValue(field: string, value: unknown): string {
-  if (isAumField(field)) {
+  if (value === null || value === undefined) return formatEmptyValue();
+  if (isAumField(field) || isUsdField(field)) {
     return formatUsdOrNA(asNumber(value));
+  }
+  if (isPercentField(field)) {
+    const numericValue = asNumber(value);
+    return numericValue === undefined ? formatValue(value) : formatPercent(numericValue);
   }
 
   return formatValue(value);
@@ -783,15 +980,20 @@ function formatNodeTypeLabel(type: string): string {
 }
 
 function formatMetricLabel(key: string): string {
-  const normalized = key.trim().replace(/[\s_-]+/g, "").toLowerCase();
+  const normalizedText = key.trim().toLowerCase();
+  const normalized = normalizedText.replace(/[\s_-]+/g, "");
   const labels: Record<string, string> = {
     nav: "AUM",
     navusd: "AUM",
+    nav_usd: "AUM",
+    "nav usd": "AUM",
     aum: "AUM",
     aumusd: "AUM",
     unitprice: "Unit Price",
+    unit_price: "Unit Price",
+    "unit price": "Unit Price",
   };
-  return labels[normalized] ?? formatDatasetLabel(key);
+  return labels[normalizedText] ?? labels[normalized] ?? formatDatasetLabel(key);
 }
 
 function isTimestampField(key: string): boolean {
@@ -849,18 +1051,6 @@ function formatDateTime(value: unknown): string {
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-function orderHistoryColumns(columns: ExplorerHistoryColumn[]): ExplorerHistoryColumn[] {
-  const visibleColumns = columns.filter((column) => !isStatusField(column.key) && !isMessageField(column.key));
-  const timestampIndex = visibleColumns.findIndex((column) => isTimestampField(column.key));
-  if (timestampIndex < 0) return visibleColumns.slice(0, 12);
-  const timestampColumn = visibleColumns[timestampIndex];
-  const metricKeys = new Set(["nav", "nav_usd", "navUsd", "unit_price", "unitPrice", "units"]);
-  const rest = visibleColumns.filter((_, index) => index !== timestampIndex);
-  const metrics = rest.filter((column) => metricKeys.has(column.key));
-  const others = rest.filter((column) => !metricKeys.has(column.key));
-  return [timestampColumn, ...metrics, ...others].slice(0, 12);
 }
 
 function formatDateTimeOrNA(value: string | null | undefined): string {
@@ -1320,7 +1510,8 @@ export function StrategiesPage(): JSX.Element {
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [headerStrategy, setHeaderStrategy] = useState<StrategyGroupHeader | null>(null);
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
-  const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
+  const [treeWarnings, setTreeWarnings] = useState<StructuredWarning[]>([]);
+  const [selectedTreeNode, setSelectedTreeNode] = useState<ExplorerTreeNode | null>(null);
   const [nodeDetails, setNodeDetails] = useState<ExplorerDetails | null>(null);
   const [historyData, setHistoryData] = useState<ExplorerHistory>(() => createEmptyHistory());
   const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
@@ -1420,7 +1611,15 @@ export function StrategiesPage(): JSX.Element {
   const firstStrategy = strategies[0];
   const isStrategyNotFound = Boolean(strategyId && !isLoadingStrategies && strategies.length > 0 && !selectedStrategy);
   const activeStrategy = headerStrategy ?? selectedStrategy;
-  const selectedTreeNode = useMemo(() => findTreeNode(treeNodes, selectedNodeKey), [selectedNodeKey, treeNodes]);
+  const selectedNodeKey = selectedTreeNode?.uiKey ?? null;
+  const selectedNodeWarnings = useMemo(() => {
+    if (!selectedTreeNode) return [];
+    return treeWarnings.filter((warning) => (
+      warning.nodeId === selectedTreeNode.id ||
+      warning.entityId === selectedTreeNode.entityId
+    ));
+  }, [selectedTreeNode, treeWarnings]);
+  const globalTreeWarnings = useMemo(() => treeWarnings.filter((warning) => !warning.nodeId && !warning.entityId), [treeWarnings]);
   const filteredStrategies = useMemo(() => {
     const query = strategySearch.trim().toLowerCase();
     if (!query) return strategies;
@@ -1440,6 +1639,7 @@ export function StrategiesPage(): JSX.Element {
     historyPagination.totalRows,
     historySearch,
   );
+  const historyTotalLabel = `${historyPagination.totalRows} matching records`;
   const primaryMetrics = useMemo((): Metric[] => {
     if (isLoadingHeader) {
       return [
@@ -1645,23 +1845,29 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     if (!selectedStrategy) {
       setTreeNodes([]);
-      setSelectedNodeKey(null);
+      setTreeWarnings([]);
+      setSelectedTreeNode(null);
       return;
     }
     let active = true;
     setIsLoadingTree(true);
     setTreeError(null);
-    setSelectedNodeKey(null);
+    setSelectedTreeNode(null);
+    setHistoryPage(1);
+    setHistorySearchInput("");
+    setHistorySearch("");
     fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/tree`)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeTree(payload);
         setTreeNodes(normalized);
-        setSelectedNodeKey(getFirstTreeNode(normalized)?.uiKey ?? null);
+        setTreeWarnings(getTreeStructuredWarnings(payload));
+        setSelectedTreeNode(getFirstTreeNode(normalized) ?? null);
       })
       .catch(() => {
         if (!active) return;
         setTreeNodes([]);
+        setTreeWarnings([]);
         setTreeError("Unable to load explorer data.");
       })
       .finally(() => {
@@ -1686,11 +1892,10 @@ export function StrategiesPage(): JSX.Element {
     setHistoryError(null);
     setNodeDetails(null);
     setHistoryData(createEmptyHistory(1, historyPageSize));
-    setSelectedDataset(null);
+    setSelectedDataset(getDefaultDatasetForNode(selectedTreeNode));
     const detailsUrl = buildExplorerDetailsUrl("/api/v1", selectedStrategy.id, selectedTreeNode);
     if (import.meta.env.DEV) {
-      console.debug("Explorer selected node", selectedTreeNode);
-      console.debug("Explorer details URL", detailsUrl);
+      console.debug("Explorer details request", { node: selectedTreeNode, url: detailsUrl });
     }
     fetchJson(detailsUrl)
       .then((payload) => {
@@ -1700,7 +1905,6 @@ export function StrategiesPage(): JSX.Element {
         }
         const details = normalizeDetails(payload, selectedTreeNode);
         setNodeDetails(details);
-        setSelectedDataset(details.datasets[0]?.id ?? getDefaultDatasetForNode(selectedTreeNode));
       })
       .catch(() => {
         if (active) {
@@ -1733,7 +1937,7 @@ export function StrategiesPage(): JSX.Element {
       historySearch,
     );
     if (import.meta.env.DEV) {
-      console.debug("Explorer history URL", historyUrl);
+      console.debug("Explorer history request", { node: selectedTreeNode, dataset: selectedDataset, url: historyUrl });
     }
     fetchJson(historyUrl)
       .then((payload) => {
@@ -1842,9 +2046,11 @@ export function StrategiesPage(): JSX.Element {
     setHistoryPage(1);
   }
 
-  function handleExplorerNodeChange(nodeId: string): void {
-    setSelectedNodeKey(nodeId);
+  function handleExplorerNodeChange(node: ExplorerTreeNode): void {
+    setSelectedTreeNode(node);
     setHistoryPage(1);
+    setHistorySearchInput("");
+    setHistorySearch("");
   }
 
   return (
@@ -2062,8 +2268,10 @@ export function StrategiesPage(): JSX.Element {
           historyPage={safeHistoryPage}
           historyPageSize={historyPageSize}
           historyRangeLabel={historyRangeLabel}
+          historyTotalLabel={historyTotalLabel}
           historyRows={historyData.rows}
           historySearch={historySearchInput}
+          globalWarnings={globalTreeWarnings}
           hasHistoryMessageColumn={hasHistoryMessageColumn}
           isLoadingDetails={isLoadingDetails}
           isLoadingHistory={isLoadingHistory}
@@ -2072,7 +2280,8 @@ export function StrategiesPage(): JSX.Element {
           hasPreviousHistoryPage={historyPagination.hasPreviousPage}
           nodes={treeNodes}
           selectedNodeKey={selectedNodeKey}
-          selectedNode={selectedTreeNode}
+          selectedNode={selectedTreeNode ?? undefined}
+          selectedNodeWarnings={selectedNodeWarnings}
           selectedDataset={selectedDataset}
           treeError={treeError}
           totalHistoryPages={totalHistoryPages}
@@ -2104,8 +2313,10 @@ function DataExplorer({
   historyPage,
   historyPageSize,
   historyRangeLabel,
+  historyTotalLabel,
   historyRows,
   historySearch,
+  globalWarnings,
   hasHistoryMessageColumn,
   hasNextHistoryPage,
   hasPreviousHistoryPage,
@@ -2116,6 +2327,7 @@ function DataExplorer({
   selectedDataset,
   selectedNode,
   selectedNodeKey,
+  selectedNodeWarnings,
   totalHistoryPages,
   treeError,
   onDatasetChange,
@@ -2131,8 +2343,10 @@ function DataExplorer({
   historyPage: number;
   historyPageSize: (typeof HISTORY_PAGE_SIZES)[number];
   historyRangeLabel: string;
+  historyTotalLabel: string;
   historyRows: HistoryRecord[];
   historySearch: string;
+  globalWarnings: StructuredWarning[];
   hasHistoryMessageColumn: boolean;
   hasNextHistoryPage: boolean;
   hasPreviousHistoryPage: boolean;
@@ -2143,17 +2357,23 @@ function DataExplorer({
   selectedDataset: string | null;
   selectedNode?: ExplorerTreeNode;
   selectedNodeKey: string | null;
+  selectedNodeWarnings: StructuredWarning[];
   totalHistoryPages: number;
   treeError: string | null;
   onDatasetChange: (dataset: string) => void;
   onHistorySearchInputChange: (value: string) => void;
   onHistoryPageChange: (page: number) => void;
   onHistoryPageSizeChange: (pageSize: (typeof HISTORY_PAGE_SIZES)[number]) => void;
-  onSelectNode: (nodeId: string) => void;
+  onSelectNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
   const canGoBack = hasPreviousHistoryPage;
   const canGoForward = hasNextHistoryPage;
+  const selectedHeaderFields = selectedNode?.headerFields.length ? selectedNode.headerFields : details?.headerFields ?? [];
+  const selectedSummaryCards = selectedNode?.summaryCards.length ? selectedNode.summaryCards : details?.summaryCards ?? [];
+  const warningsToShow = selectedNodeWarnings.length > 0
+    ? selectedNodeWarnings
+    : details?.warnings.map((message) => ({ level: "warning", code: "warning", message })) ?? [];
 
   return (
     <section className="mt-6 rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
@@ -2161,8 +2381,13 @@ function DataExplorer({
         <div>
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Data Explorer</div>
           <p className="mt-2 text-sm text-slate-500">Verified hierarchy, node details and latest history records for the selected strategy group.</p>
+          {globalWarnings.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+              Data Quality: {globalWarnings.map((warning) => warning.message).join(" ")}
+            </div>
+          ) : null}
         </div>
-        <div className="text-xs text-slate-500">{historyRangeLabel}</div>
+        <div className="text-xs text-slate-500">{historyTotalLabel}</div>
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -2189,18 +2414,42 @@ function DataExplorer({
                     <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">
                       {formatNodeTypeLabel(details?.type ?? selectedNode?.type ?? "No node selected")}
                     </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {selectedNode?.status ? <StatusBadge label={`Financial status: ${selectedNode.status}`} tone={getStatusTone(selectedNode.status)} /> : null}
+                      {selectedNode?.collectionStatus ? <StatusBadge label={`Collection: ${selectedNode.collectionStatus}`} tone={getStatusTone(selectedNode.collectionStatus)} /> : null}
+                      {selectedNode?.hasCollectionError ? <StatusBadge label="Collection error" tone="warning" title={selectedNode.latestErrorMessage ?? undefined} /> : null}
+                    </div>
                     {details?.subtitle ? <div className="mt-1 text-xs text-slate-500">{details.subtitle}</div> : null}
                   </div>
                 </div>
-                {details?.summaryCards.length ? (
+                {selectedHeaderFields.length ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {selectedHeaderFields.map((item) => (
+                      <MetricChip key={item.key} label={item.label} value={item.value} />
+                    ))}
+                  </div>
+                ) : null}
+                {selectedSummaryCards.length ? (
                   <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    {details.summaryCards.map((item) => (
+                    {selectedSummaryCards.map((item) => (
                       <MetricChip key={item.label} label={item.label} value={item.value} />
                     ))}
                   </div>
                 ) : (
                   <p className="mt-4 text-sm text-slate-500">No summary details are available for this node yet.</p>
                 )}
+                {details?.latest ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {Object.entries(details.latest).slice(0, 8).map(([key, value]) => (
+                      <MetricChip key={key} label={formatMetricLabel(key)} value={formatFieldValue(key, value)} />
+                    ))}
+                  </div>
+                ) : null}
+                {warningsToShow.length ? (
+                  <div className="mt-4 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+                    {warningsToShow.map((warning) => `${warning.level}: ${warning.message}`).join(" ")}
+                  </div>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -2294,14 +2543,14 @@ function TreeNodeButton({
   depth: number;
   node: ExplorerTreeNode;
   selectedNodeKey: string | null;
-  onSelectNode: (uiKey: string) => void;
+  onSelectNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
   const selected = node.uiKey === selectedNodeKey;
   return (
     <div>
       <button
         type="button"
-        onClick={() => onSelectNode(node.uiKey)}
+        onClick={() => onSelectNode(node)}
         className={cn(
           "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition",
           selected ? "bg-cyan-300/12 text-white ring-1 ring-cyan-300/25" : "text-slate-300 hover:bg-cyan-300/8 hover:text-white",
@@ -2311,6 +2560,16 @@ function TreeNodeButton({
         <span className="min-w-0">
           <span className="block truncate font-medium">{node.label}</span>
           <span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-slate-500">{formatNodeTypeLabel(node.type)}</span>
+          {node.headerFields.length > 0 || node.summaryCards.length > 0 ? (
+            <span className="mt-1 block truncate text-[10px] text-slate-500">
+              {[...node.headerFields, ...node.summaryCards].slice(0, 2).map((item) => `${item.label}: ${item.value}`).join(" · ")}
+            </span>
+          ) : null}
+          {node.hasCollectionError ? (
+            <span className="mt-1 block truncate text-[10px] font-medium text-amber-200" title={node.latestErrorMessage ?? undefined}>
+              Collection error
+            </span>
+          ) : null}
         </span>
         {node.count !== undefined ? <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-slate-400">{node.count}</span> : null}
       </button>
@@ -2318,6 +2577,31 @@ function TreeNodeButton({
         <TreeNodeButton key={child.uiKey} node={child} depth={depth + 1} selectedNodeKey={selectedNodeKey} onSelectNode={onSelectNode} />
       ))}
     </div>
+  );
+}
+
+function StatusBadge({
+  label,
+  tone,
+  title,
+}: {
+  label: string;
+  tone: "good" | "warning" | "risk" | "default";
+  title?: string;
+}): JSX.Element {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em]",
+        tone === "good" ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-200" : null,
+        tone === "warning" ? "border-amber-300/20 bg-amber-300/10 text-amber-100" : null,
+        tone === "risk" ? "border-rose-300/20 bg-rose-300/10 text-rose-100" : null,
+        tone === "default" ? "border-white/10 bg-white/[0.04] text-slate-400" : null,
+      )}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -2338,8 +2622,22 @@ function StatusIcon({ status }: { status: string | null }): JSX.Element {
 }
 
 function formatHistoryCell(column: ExplorerHistoryColumn, row: HistoryRecord): string {
-  if (isTimestampField(column.key)) return formatDateTime(row[column.key]);
-  return formatFieldValue(column.key, row[column.key]);
+  const value = row[column.key];
+  if (value === null || value === undefined) return formatEmptyValue();
+
+  const normalizedFormat = column.format?.trim().toLowerCase();
+  if (normalizedFormat === "currency" || column.unit === "USD") return formatUsdOrNA(asNumber(value));
+  if (normalizedFormat === "percent") {
+    const numericValue = asNumber(value);
+    return numericValue === undefined ? formatValue(value) : formatPercent(numericValue);
+  }
+  if (normalizedFormat === "datetime" || column.type === "datetime" || isTimestampField(column.key)) return formatDateTime(value);
+  if (normalizedFormat === "address") return formatAddress(value);
+  if (normalizedFormat === "tags") return formatTags(value);
+  if (normalizedFormat === "boolean" || column.type === "boolean") return typeof value === "boolean" ? (value ? "Yes" : "No") : formatValue(value);
+  if (normalizedFormat === "number" || column.type === "number") return formatNumberOrNA(asNumber(value));
+
+  return formatFieldValue(column.key, value);
 }
 
 function HistoryTable({
