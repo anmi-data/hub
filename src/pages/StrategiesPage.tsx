@@ -1605,7 +1605,7 @@ function pearsonAligned(left: NormalizedChartSeries, right: NormalizedChartSerie
 
 function MetricsTable({
   metrics,
-  subtitle = "Collected by ANMI Track",
+  subtitle = "Collected and verified by ANMI Track",
   title = "Strategy Metrics",
 }: {
   metrics: Metric[];
@@ -1776,7 +1776,6 @@ export function StrategiesPage(): JSX.Element {
   const primaryMetrics = useMemo((): Metric[] => {
     if (isLoadingHeader) {
       return [
-        "Unit Price",
         "AUM",
         "Net Return",
         "APY",
@@ -1792,12 +1791,10 @@ export function StrategiesPage(): JSX.Element {
     const source = headerStrategy ?? selectedStrategy;
     const warningsCount = headerStrategy?.warnings?.length ?? 0;
     const metrics: Metric[] = [
-      { label: "Unit Price", value: formatNumberOrNA(source?.unitPrice), hint: "Strategy unit price" },
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
       { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
       { label: "APY", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
-      { label: "Drawdown", value: formatPercentOrNA(headerStrategy?.currentDrawdown ?? selectedStrategy?.currentDrawdown), hint: "Current drawdown" },
       { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
       { label: "Sharpe ratio", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
       { label: "Sortino ratio", value: formatNumberOrNA(headerStrategy?.sortino ?? headerStrategy?.sortinoRatio, 2), hint: "Downside-adjusted return" },
@@ -2290,21 +2287,35 @@ export function StrategiesPage(): JSX.Element {
           <div className="min-w-0 rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
             <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
+                <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
                   <LineChart className="h-4 w-4 text-cyan-200" />
-                  {analytics.chartView.title}
+                  <div className="inline-flex items-center text-sm font-medium">
+                    <button
+                      type="button"
+                      onClick={() => handleChartModeChange("nav_usd")}
+                      className={cn(
+                        "px-1 py-0.5 text-sm transition",
+                        chartMode === "nav_usd" ? "text-cyan-100" : "text-slate-500 hover:text-slate-200",
+                      )}
+                    >
+                      AUM
+                    </button>
+                    <span className="mx-2 h-4 w-px bg-white/10" />
+                    <button
+                      type="button"
+                      onClick={() => handleChartModeChange("unit_price")}
+                      className={cn(
+                        "px-1 py-0.5 text-sm transition",
+                        chartMode === "unit_price" ? "text-cyan-100" : "text-slate-500 hover:text-slate-200",
+                      )}
+                    >
+                      UNIT PRICE
+                    </button>
+                  </div>
                 </div>
                 <p className="mt-2 text-sm text-slate-500">{analytics.chartView.subtitle}</p>
               </div>
               <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:flex-nowrap lg:w-auto lg:shrink-0">
-                <SegmentedControl
-                  value={chartMode}
-                  options={[
-                    { value: "nav_usd", label: "AUM" },
-                    { value: "unit_price", label: "Unit Price" },
-                  ]}
-                  onChange={handleChartModeChange}
-                />
                 {chartMode === "unit_price" ? (
                   <div ref={benchmarkMenuRef} className="relative">
                     <button
@@ -2369,7 +2380,7 @@ export function StrategiesPage(): JSX.Element {
           <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Advanced calculated metrics</div>
-              <p className="mt-1 text-xs text-slate-500">Calculated from visible chart series. Not part of the primary ANMI Track collected metrics.</p>
+              <p className="mt-1 text-xs text-slate-500">Deeper performance diagnostics based on the verified strategy track record</p>
             </div>
           </div>
           <div className="overflow-hidden rounded-xl border border-white/10">
@@ -2506,7 +2517,7 @@ function DataExplorer({
       <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Data Explorer</div>
-          <p className="mt-2 text-sm text-slate-500">Verified hierarchy, node details and latest history records for the selected strategy group.</p>
+          <p className="mt-2 text-sm text-slate-500">Inspect the raw data behind the strategy: balances, positions, snapshots, and collection history</p>
           {globalWarnings.length > 0 ? (
             <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
               Data Quality: {globalWarnings.map((warning) => warning.message).join(" ")}
@@ -2519,7 +2530,7 @@ function DataExplorer({
         <aside className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
           {isLoadingTree ? <div className="p-3 text-sm text-slate-500">Loading explorer data...</div> : null}
           {treeError ? <div className="p-3 text-sm text-amber-100">{treeError}</div> : null}
-          {!isLoadingTree && !treeError && nodes.length === 0 ? <div className="p-3 text-sm text-slate-500">No explorer tree available.</div> : null}
+          {!isLoadingTree && !treeError && nodes.length === 0 ? <div className="p-3 text-sm text-slate-500">No explorer tree available</div> : null}
           <div className="space-y-1">
             {nodes.map((node) => (
               <TreeNodeButton key={node.uiKey} node={node} depth={0} selectedNodeKey={selectedNodeKey} onSelectNode={onSelectNode} />
@@ -2561,7 +2572,7 @@ function DataExplorer({
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-4 text-sm text-slate-500">No summary details are available for this node yet.</p>
+                  <p className="mt-4 text-sm text-slate-500">No summary details are available for this node yet</p>
                 )}
                 {details?.latest ? (
                   <div className="mt-4 flex flex-wrap gap-2">
@@ -2650,7 +2661,7 @@ function DataExplorer({
             </div>
             {isLoadingHistory ? <div className="text-sm text-slate-500">Loading history...</div> : null}
             {historyError ? <div className="text-sm text-amber-100">{historyError}</div> : null}
-            {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}.</div> : null}
+            {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}</div> : null}
             {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} showMessageColumn={hasHistoryMessageColumn} /> : null}
           </div>
         </div>
@@ -2933,7 +2944,7 @@ function StrategySelectorGrid({
           );
         })}
         {strategies.length === 0 ? (
-          <div className="border-t border-white/10 px-5 py-5 text-sm text-slate-500">No strategies match your search.</div>
+          <div className="border-t border-white/10 px-5 py-5 text-sm text-slate-500">No strategies match your search</div>
         ) : null}
       </div>
     </div>
@@ -2950,19 +2961,23 @@ function SegmentedControl({
   onChange: (value: string) => void;
 }): JSX.Element {
   return (
-    <div className="inline-flex h-10 rounded-lg border border-white/10 bg-white/[0.035] p-1">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          onClick={() => onChange(option.value)}
-          className={cn(
-            "rounded-md px-3 text-xs font-medium transition",
-            option.value === value ? "bg-cyan-200 text-slate-950" : "text-slate-400 hover:text-white",
-          )}
-        >
-          {option.label}
-        </button>
+    <div className="inline-flex items-center text-sm font-medium">
+      {options.map((option, index) => (
+        <span key={option.value} className="inline-flex items-center">
+          {index > 0 ? <span className="mx-2 h-4 w-px bg-white/10" /> : null}
+          <button
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "px-1 py-0.5 text-sm transition",
+              option.value === value
+                ? "text-cyan-100"
+                : "text-slate-500 hover:text-slate-200",
+            )}
+          >
+            {option.label}
+          </button>
+        </span>
       ))}
     </div>
   );
