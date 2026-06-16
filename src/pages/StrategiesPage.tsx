@@ -50,7 +50,17 @@ type ExplorerNode = {
   accountId?: string;
   protocolType?: string;
   defaultDataset?: string;
+  header?: ExplorerHeaderField[];
+  summary?: Record<string, unknown>;
   meta?: Record<string, unknown>;
+};
+
+type ExplorerHeaderField = {
+  key: string;
+  label: string;
+  value: unknown;
+  format?: string;
+  unit?: string;
 };
 
 type StructuredWarning = {
@@ -404,6 +414,8 @@ function normalizeTreeNode(item: unknown, parentPath: string, index = 0): Explor
   const accountId = asString(item.accountId) ?? asString(item.account_id) ?? asString(meta.accountId) ?? asString(meta.account_id);
   const protocolType = asString(item.protocolType) ?? asString(item.protocol_type) ?? asString(item.protocol) ?? asString(meta.protocolType) ?? asString(meta.protocol_type) ?? asString(meta.protocol);
   const defaultDataset = asString(item.defaultDataset) ?? asString(item.default_dataset);
+  const header = normalizeRawHeaderFields(item.header);
+  const summary = isRecord(item.summary) ? item.summary : undefined;
   const children = asArray(item.children)
     .map((child, childIndex) => normalizeTreeNode(child, uiKey, childIndex))
     .filter((node): node is ExplorerTreeNode => Boolean(node));
@@ -413,8 +425,10 @@ function normalizeTreeNode(item: unknown, parentPath: string, index = 0): Explor
     entityId,
     label,
     uiKey,
+    header,
+    summary,
     headerFields: normalizeHeaderFields(item.header),
-    summaryCards: normalizeSummaryCards(item.summary, type, protocolType?.toLowerCase()),
+    summaryCards: normalizeSummaryCards(summary, type, protocolType?.toLowerCase()),
   };
   const count = firstNumber(item.count, item.rows, item.total);
   const status = asString(item.status);
@@ -693,6 +707,25 @@ function normalizeHeaderFields(value: unknown): ExplorerDetails["headerFields"] 
       };
     })
     .filter((item): item is ExplorerDetails["headerFields"][number] => Boolean(item));
+}
+
+function normalizeRawHeaderFields(value: unknown): ExplorerHeaderField[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const fields = value
+    .map((item): ExplorerHeaderField | undefined => {
+      if (!isRecord(item)) return undefined;
+      const key = asString(item.key) ?? asString(item.id) ?? asString(item.name);
+      if (!key) return undefined;
+      return {
+        key,
+        label: asString(item.label) ?? formatMetricLabel(key),
+        value: item.value,
+        format: asString(item.format),
+        unit: asString(item.unit),
+      };
+    })
+    .filter((item): item is ExplorerHeaderField => Boolean(item));
+  return fields.length > 0 ? fields : undefined;
 }
 
 function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDetails {
@@ -994,6 +1027,107 @@ function formatMetricLabel(key: string): string {
     "unit price": "Unit Price",
   };
   return labels[normalizedText] ?? labels[normalized] ?? formatDatasetLabel(key);
+}
+
+function formatExplorerNodeKind(node: ExplorerTreeNode): string {
+  const type = node.type?.toLowerCase();
+  const protocolType = node.protocolType?.toLowerCase();
+
+  if (type === "strategy_group") return "Strategy Group";
+  if (type === "strategy") return "Strategy";
+  if (type === "account") return "Account";
+  if (type === "balance_group") return "Balance";
+  if (type === "lp_position") return "Liquidity";
+  if (type === "position_group" && protocolType === "lp") return "Liquidity";
+  if (type === "position_group") return "Positions";
+  if (type === "futures_position") return "Positions";
+  if (type === "generic_position") return "Positions";
+
+  return formatDatasetLabel(node.type ?? "Node");
+}
+
+function normalizeMetricKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/[$,%\s,]/g, ""));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getNumericHeaderOrSummaryValue(node: ExplorerTreeNode, keys: string[]): number | null {
+  const normalizedKeys = new Set(keys.map(normalizeMetricKey));
+
+  for (const field of node.header ?? []) {
+    const fieldKey = normalizeMetricKey(field.key);
+    const fieldLabel = normalizeMetricKey(field.label);
+    if (normalizedKeys.has(fieldKey) || normalizedKeys.has(fieldLabel)) {
+      const value = toFiniteNumber(field.value);
+      if (value !== null) return value;
+    }
+  }
+
+  for (const [key, value] of Object.entries(node.summary ?? {})) {
+    if (normalizedKeys.has(normalizeMetricKey(key))) {
+      const numericValue = toFiniteNumber(value);
+      if (numericValue !== null) return numericValue;
+    }
+  }
+
+  return null;
+}
+
+function getTreeAumValue(node: ExplorerTreeNode): number | null {
+  return getNumericHeaderOrSummaryValue(node, [
+    "aumUsd",
+    "aum_usd",
+    "navUsd",
+    "nav_usd",
+    "walletNavUsd",
+    "wallet_nav_usd",
+    "lpNavUsd",
+    "lp_nav_usd",
+    "perpNavUsd",
+    "perp_nav_usd",
+    "valueUsd",
+    "value_usd",
+  ]);
+}
+
+function getTreeWeightValue(node: ExplorerTreeNode): number | null {
+  return getNumericHeaderOrSummaryValue(node, [
+    "weight",
+    "accountWeight",
+    "account_weight",
+    "walletWeight",
+    "wallet_weight",
+    "lpWeight",
+    "lp_weight",
+    "perpWeight",
+    "perp_weight",
+    "strategyWeight",
+    "strategy_weight",
+  ]);
+}
+
+function formatTreeAum(node: ExplorerTreeNode): string {
+  const value = getTreeAumValue(node);
+  if (value === null) return "AUM —";
+  return `AUM ${value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatTreeWeight(node: ExplorerTreeNode): string {
+  const value = getTreeWeightValue(node);
+  if (value === null) return "Weight —";
+  return `Weight ${(value * 100).toFixed(2)}%`;
 }
 
 function isTimestampField(key: string): boolean {
@@ -1639,36 +1773,35 @@ export function StrategiesPage(): JSX.Element {
     historyPagination.totalRows,
     historySearch,
   );
-  const historyTotalLabel = `${historyPagination.totalRows} matching records`;
   const primaryMetrics = useMemo((): Metric[] => {
     if (isLoadingHeader) {
       return [
-        "UnitPrice",
+        "Unit Price",
         "AUM",
-        "Total Return",
-        "APY / CAGR",
-        "Max DD",
-        "Current DD",
+        "Net Return",
+        "APY",
+        "Max Drawdown",
+        "Drawdown",
         "Volatility",
-        "Sharpe",
-        "Sortino",
-        "Updated",
+        "Sharpe ratio",
+        "Sortino ratio",
+        "Last update",
       ].map((label) => ({ label, value: "Loading...", hint: "ANMI Track header" }));
     }
 
     const source = headerStrategy ?? selectedStrategy;
     const warningsCount = headerStrategy?.warnings?.length ?? 0;
     const metrics: Metric[] = [
-      { label: "UnitPrice", value: formatNumberOrNA(source?.unitPrice), hint: "Header unit price" },
-      { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Latest assets under management reported by ANMI Track" },
-      { label: "Total Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Header total return" },
-      { label: "APY / CAGR", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
-      { label: "Max DD", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
-      { label: "Current DD", value: formatPercentOrNA(headerStrategy?.currentDrawdown ?? selectedStrategy?.currentDrawdown), hint: "Current drawdown" },
-      { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized where available" },
-      { label: "Sharpe", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
-      { label: "Sortino", value: formatNumberOrNA(headerStrategy?.sortino ?? headerStrategy?.sortinoRatio, 2), hint: "Downside-adjusted return" },
-      { label: "Updated", value: formatDateTimeOrNA(headerStrategy?.updatedAt ?? selectedStrategy?.updatedAt), hint: "Latest header snapshot" },
+      { label: "Unit Price", value: formatNumberOrNA(source?.unitPrice), hint: "Strategy unit price" },
+      { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
+      { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
+      { label: "APY", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
+      { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
+      { label: "Drawdown", value: formatPercentOrNA(headerStrategy?.currentDrawdown ?? selectedStrategy?.currentDrawdown), hint: "Current drawdown" },
+      { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
+      { label: "Sharpe ratio", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
+      { label: "Sortino ratio", value: formatNumberOrNA(headerStrategy?.sortino ?? headerStrategy?.sortinoRatio, 2), hint: "Downside-adjusted return" },
+      { label: "Last update", value: formatDateTimeOrNA(headerStrategy?.updatedAt ?? selectedStrategy?.updatedAt), hint: "Latest snapshot timestamp" },
     ];
 
     if (headerStrategy?.dataQuality !== undefined) {
@@ -2103,14 +2236,10 @@ export function StrategiesPage(): JSX.Element {
                   </div>
 
                   {activeStrategy?.description ? (
-                    <p className="mt-1 max-w-4xl truncate text-sm leading-6 text-slate-400">{activeStrategy.description}</p>
+                    <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-400">{activeStrategy.description}</p>
                   ) : null}
 
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <MetricChip label="UnitPrice" value={formatNumber(activeStrategy?.unitPrice)} />
-                    <MetricChip label="APY" value={formatPercentOrNA(activeStrategy?.apy)} />
-                    <MetricChip label="Max DD" value={formatPercentOrNA(activeStrategy?.maxDrawdown)} />
-                    <MetricChip label="Updated" value={formatDateTimeOrNA(activeStrategy?.updatedAt)} />
                     {headerStrategy?.isLiveTrackRecord === true ? (
                       <div
                         className="inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-xs font-medium text-cyan-100"
@@ -2268,7 +2397,6 @@ export function StrategiesPage(): JSX.Element {
           historyPage={safeHistoryPage}
           historyPageSize={historyPageSize}
           historyRangeLabel={historyRangeLabel}
-          historyTotalLabel={historyTotalLabel}
           historyRows={historyData.rows}
           historySearch={historySearchInput}
           globalWarnings={globalTreeWarnings}
@@ -2313,7 +2441,6 @@ function DataExplorer({
   historyPage,
   historyPageSize,
   historyRangeLabel,
-  historyTotalLabel,
   historyRows,
   historySearch,
   globalWarnings,
@@ -2343,7 +2470,6 @@ function DataExplorer({
   historyPage: number;
   historyPageSize: (typeof HISTORY_PAGE_SIZES)[number];
   historyRangeLabel: string;
-  historyTotalLabel: string;
   historyRows: HistoryRecord[];
   historySearch: string;
   globalWarnings: StructuredWarning[];
@@ -2387,7 +2513,6 @@ function DataExplorer({
             </div>
           ) : null}
         </div>
-        <div className="text-xs text-slate-500">{historyTotalLabel}</div>
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -2552,26 +2677,31 @@ function TreeNodeButton({
         type="button"
         onClick={() => onSelectNode(node)}
         className={cn(
-          "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition",
-          selected ? "bg-cyan-300/12 text-white ring-1 ring-cyan-300/25" : "text-slate-300 hover:bg-cyan-300/8 hover:text-white",
+          "grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-4 rounded-xl border px-3 py-3 text-left transition",
+          selected
+            ? "border-cyan-300/60 bg-cyan-300/10 text-white"
+            : "border-transparent text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/5 hover:text-white",
         )}
         style={{ paddingLeft: `${12 + depth * 16}px` }}
       >
-        <span className="min-w-0">
-          <span className="block truncate font-medium">{node.label}</span>
-          <span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-slate-500">{formatNodeTypeLabel(node.type)}</span>
-          {node.headerFields.length > 0 || node.summaryCards.length > 0 ? (
-            <span className="mt-1 block truncate text-[10px] text-slate-500">
+        <span className="min-w-0 text-left">
+          <span className="block truncate text-sm font-semibold text-slate-100">{node.label}</span>
+          <span className="mt-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">{formatExplorerNodeKind(node)}</span>
+          {/*
               {[...node.headerFields, ...node.summaryCards].slice(0, 2).map((item) => `${item.label}: ${item.value}`).join(" · ")}
             </span>
           ) : null}
+          */}
           {node.hasCollectionError ? (
             <span className="mt-1 block truncate text-[10px] font-medium text-amber-200" title={node.latestErrorMessage ?? undefined}>
               Collection error
             </span>
           ) : null}
         </span>
-        {node.count !== undefined ? <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-slate-400">{node.count}</span> : null}
+        <span className="shrink-0 text-right">
+          <span className="block text-xs font-semibold tabular-nums text-slate-100">{formatTreeAum(node)}</span>
+          <span className="mt-1 block text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">{formatTreeWeight(node)}</span>
+        </span>
       </button>
       {node.children?.map((child) => (
         <TreeNodeButton key={child.uiKey} node={child} depth={depth + 1} selectedNodeKey={selectedNodeKey} onSelectNode={onSelectNode} />
