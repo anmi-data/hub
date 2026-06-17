@@ -918,11 +918,15 @@ function formatDataQuality(value: string | number | boolean | null | undefined):
 function formatValue(value: unknown): string {
   if (typeof value === "number") return formatNumber(value);
   if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "string" && value.trim().length > 0) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return "N/A";
+    return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed;
+  }
   if (value !== null && typeof value === "object") {
     try {
       const serialized = JSON.stringify(value);
-      return serialized.length > 96 ? `${serialized.slice(0, 93)}...` : serialized;
+      return serialized.length > 120 ? `${serialized.slice(0, 117)}...` : serialized;
     } catch {
       return "Object";
     }
@@ -2184,7 +2188,7 @@ export function StrategiesPage(): JSX.Element {
   }
 
   return (
-    <main className="min-h-screen bg-[#050b14] text-slate-100">
+    <main className="min-h-screen min-w-0 overflow-x-hidden bg-[#050b14] text-slate-100">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(34,211,238,0.18),transparent_30%),radial-gradient(circle_at_90%_8%,rgba(14,165,233,0.12),transparent_26%),linear-gradient(180deg,rgba(15,23,42,0),rgba(2,6,23,0.88))]" />
       <div className="pointer-events-none fixed inset-0 opacity-[0.09] [background-image:linear-gradient(rgba(255,255,255,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.08)_1px,transparent_1px)] [background-size:56px_56px]" />
 
@@ -2263,7 +2267,7 @@ export function StrategiesPage(): JSX.Element {
         </div>
       </header>
 
-      <section className="relative z-0 mx-auto max-w-7xl px-5 py-8 lg:px-8">
+      <section className="relative z-0 mx-auto min-w-0 max-w-7xl overflow-hidden px-5 py-8 lg:px-8">
         {isLoadingStrategies || isLoadingBenchmarks || isLoadingHeader || isLoadingNav ? (
           <div className="mb-5 flex flex-wrap items-center gap-3">
             <StatusPill active label={isLoadingStrategies ? "Loading strategy groups..." : isLoadingBenchmarks ? "Loading benchmarks..." : isLoadingHeader ? "Loading strategy header..." : "Loading chart..."} />
@@ -2513,7 +2517,7 @@ function DataExplorer({
     : details?.warnings.map((message) => ({ level: "warning", code: "warning", message })) ?? [];
 
   return (
-    <section className="mt-6 rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
+    <section className="mt-6 min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
       <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Data Explorer</div>
@@ -2791,8 +2795,8 @@ function HistoryTable({
   showMessageColumn: boolean;
 }): JSX.Element {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[720px] border-collapse text-sm">
+    <div className="min-w-0 max-w-full overflow-x-auto">
+      <table className="w-full min-w-full border-collapse text-sm">
         <thead>
           <tr className="border-y border-white/10 text-left text-[10px] uppercase tracking-[0.14em] text-slate-500">
             <th className="w-10 px-3 py-3 font-medium">Status</th>
@@ -2873,9 +2877,9 @@ function StateCard({
 
 function MetricChip({ label, value }: { label: string; value: string }): JSX.Element {
   return (
-    <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-xs">
-      <span className="uppercase tracking-[0.14em] text-slate-500">{label}</span>
-      <span className="font-medium text-slate-100">{value}</span>
+    <div className="inline-flex min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-xs">
+      <span className="min-w-0 truncate uppercase tracking-[0.14em] text-slate-500">{label}</span>
+      <span className="min-w-0 max-w-[180px] overflow-hidden truncate font-medium text-slate-100">{value}</span>
     </div>
   );
 }
