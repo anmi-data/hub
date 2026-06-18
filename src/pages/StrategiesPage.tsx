@@ -192,7 +192,7 @@ type VisibleSeriesPoint = TimePoint & {
 type Metric = {
   label: string;
   value: string;
-  hint: string;
+  hint?: string;
 };
 
 const DEFAULT_CHART_MODE: ChartMode = "unit_price";
@@ -761,6 +761,50 @@ function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDe
     warnings,
   };
 }
+
+function uniqueMetricRows(rows: MetricRow[]): MetricRow[] {
+  const seen = new Set<string>();
+
+  return rows.filter((row) => {
+    const key = normalizeMetricKey(row.label);
+
+    if (seen.has(key)) return false;
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildNodeCurrentMetrics(details: ExplorerDetails | null, selectedNode?: ExplorerTreeNode,): Metric[] {
+  const headerRows: Metric[] = (details?.headerFields.length
+    ? details.headerFields
+    : selectedNode?.headerFields ?? []
+  ).map((field) => ({
+    label: field.label,
+    value: field.value,
+  }));
+
+  const summaryRows: Metric[] = (details?.summaryCards.length
+    ? details.summaryCards
+    : selectedNode?.summaryCards ?? []
+  ).map((card) => ({
+    label: card.label,
+    value: card.value,
+  }));
+
+  const latestRows: Metric[] = details?.latest
+    ? Object.entries(details.latest)
+        .filter(([key]) => !["data", "raw", "metadata", "meta"].includes(key))
+        .slice(0, 8)
+        .map(([key, value]) => ({
+          label: formatMetricLabel(key),
+          value: formatFieldValue(key, value),
+        }))
+    : [];
+
+  return uniqueMetricRows([...headerRows, ...summaryRows, ...latestRows]);
+}
+
 
 function normalizeHistoryColumn(item: unknown): ExplorerHistoryColumn | undefined {
   if (typeof item === "string") return { key: item, label: formatMetricLabel(item), type: "string" };
@@ -1638,6 +1682,35 @@ function MetricsTable({
   );
 }
 
+function NodeMetricsTable({ metrics }: { metrics: Metric[] }): JSX.Element {
+  if (metrics.length === 0) {
+    return (
+      <p className="mt-4 text-sm text-slate-500">
+        No current metrics are available for this element yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
+      <table className="w-full text-sm">
+        <tbody>
+          {metrics.map((metric) => (
+            <tr key={metric.label} className="border-b border-white/10 last:border-b-0">
+              <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">
+                {metric.label}
+              </td>
+              <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-white">
+                {metric.value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function StrategiesPage(): JSX.Element {
   const { strategyId } = useParams<{ strategyId: string }>();
   const navigate = useNavigate();
@@ -1797,7 +1870,7 @@ export function StrategiesPage(): JSX.Element {
     const metrics: Metric[] = [
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
       { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
-      { label: "APY", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
+      { label: "Net APY", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
       { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
       { label: "Sharpe ratio", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
@@ -2510,8 +2583,9 @@ function DataExplorer({
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
   const canGoBack = hasPreviousHistoryPage;
   const canGoForward = hasNextHistoryPage;
-  const selectedHeaderFields = selectedNode?.headerFields.length ? selectedNode.headerFields : details?.headerFields ?? [];
-  const selectedSummaryCards = selectedNode?.summaryCards.length ? selectedNode.summaryCards : details?.summaryCards ?? [];
+  const currentNodeMetrics = buildNodeCurrentMetrics(details, selectedNode);
+  // const selectedHeaderFields = selectedNode?.headerFields.length ? selectedNode.headerFields : details?.headerFields ?? [];
+  // const selectedSummaryCards = selectedNode?.summaryCards.length ? selectedNode.summaryCards : details?.summaryCards ?? [];
   const warningsToShow = selectedNodeWarnings.length > 0
     ? selectedNodeWarnings
     : details?.warnings.map((message) => ({ level: "warning", code: "warning", message })) ?? [];
@@ -2520,7 +2594,7 @@ function DataExplorer({
     <section className="mt-6 min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
       <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Data Explorer</div>
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Track Records Explorer</div>
           <p className="mt-2 text-sm text-slate-500">Inspect the raw data behind the strategy: balances, positions, snapshots, and collection history</p>
           {globalWarnings.length > 0 ? (
             <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
@@ -2562,29 +2636,16 @@ function DataExplorer({
                     {details?.subtitle ? <div className="mt-1 text-xs text-slate-500">{details.subtitle}</div> : null}
                   </div>
                 </div>
-                {selectedHeaderFields.length ? (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {selectedHeaderFields.map((item) => (
-                      <MetricChip key={item.key} label={item.label} value={item.value} />
-                    ))}
+                <div className="mt-4">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+                    Current metrics
                   </div>
-                ) : null}
-                {selectedSummaryCards.length ? (
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    {selectedSummaryCards.map((item) => (
-                      <MetricChip key={item.label} label={item.label} value={item.value} />
-                    ))}
+                  <div className="mt-1 text-xs text-slate-500">
+                    Latest verified values for the selected element.
                   </div>
-                ) : (
-                  <p className="mt-4 text-sm text-slate-500">No summary details are available for this node yet</p>
-                )}
-                {details?.latest ? (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {Object.entries(details.latest).slice(0, 8).map(([key, value]) => (
-                      <MetricChip key={key} label={formatMetricLabel(key)} value={formatFieldValue(key, value)} />
-                    ))}
-                  </div>
-                ) : null}
+
+                  <NodeMetricsTable metrics={currentNodeMetrics} />
+                </div>
                 {warningsToShow.length ? (
                   <div className="mt-4 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
                     {warningsToShow.map((warning) => `${warning.level}: ${warning.message}`).join(" ")}
