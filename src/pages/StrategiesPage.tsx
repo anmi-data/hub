@@ -85,6 +85,11 @@ type ExplorerTreeNode = ExplorerNode & {
   children?: ExplorerTreeNode[];
 };
 
+type FlatExplorerNode = ExplorerTreeNode & {
+  depth: number;
+  pathLabel: string;
+};
+
 type ExplorerDetails = {
   title: string;
   subtitle?: string | null;
@@ -95,6 +100,9 @@ type ExplorerDetails = {
   latest?: Record<string, unknown> | null;
   datasets: HistoryDataset[];
   warnings: string[];
+  rawHeader?: ExplorerHeaderField[];
+  rawSummary?: Record<string, unknown>;
+  rawLatest?: Record<string, unknown> | null;
 };
 
 type HistoryDataset = {
@@ -193,6 +201,22 @@ type Metric = {
   label: string;
   value: string;
   hint?: string;
+};
+
+type ExposureMixKind =
+  | "strategy_group_strategies"
+  | "strategy_exposure"
+  | "account_exposure"
+  | "lp_pools"
+  | "perp_margin"
+  | "assets";
+
+type ExposureMixItem = {
+  key: string;
+  label: string;
+  value: number;
+  amountUsd?: number | null;
+  kind?: ExposureMixKind;
 };
 
 const DEFAULT_CHART_MODE: ChartMode = "unit_price";
@@ -509,6 +533,26 @@ function getFirstTreeNode(nodes: ExplorerTreeNode[]): ExplorerTreeNode | undefin
   return nodes[0];
 }
 
+function flattenExplorerNodes(
+  nodes: ExplorerTreeNode[],
+  depth = 0,
+  parentLabels: string[] = [],
+): FlatExplorerNode[] {
+  return nodes.flatMap((node) => {
+    const pathLabels = [...parentLabels, node.label];
+    const current: FlatExplorerNode = {
+      ...node,
+      depth,
+      pathLabel: pathLabels.join(" / "),
+    };
+
+    return [
+      current,
+      ...flattenExplorerNodes(node.children ?? [], depth + 1, pathLabels),
+    ];
+  });
+}
+
 function getEntityId(node: ExplorerNode): string {
   return node.entityId;
 }
@@ -732,6 +776,8 @@ function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDe
   const source = unwrapDetailsPayload(payload);
   const responseNode = isRecord(source.node) ? source.node : {};
   const headerFields = normalizeHeaderFields(source.header);
+  const rawHeader = normalizeRawHeaderFields(source.header);
+  const rawSummary = isRecord(source.summary) ? source.summary : undefined;
   const detailsType = asString(source.type) ?? asString(responseNode.type) ?? node?.type ?? "node";
   const detailsProtocolType = asString(source.protocolType) ?? asString(source.protocol_type) ?? asString(responseNode.protocolType) ?? asString(responseNode.protocol_type) ?? node?.protocolType;
   const summaryCards = [
@@ -759,10 +805,13 @@ function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDe
     latest,
     datasets: normalizeDatasets(source, node),
     warnings,
+    rawHeader,
+    rawSummary,
+    rawLatest: latest,
   };
 }
 
-function uniqueMetricRows(rows: MetricRow[]): MetricRow[] {
+function uniqueMetricRows(rows: Metric[]): Metric[] {
   const seen = new Set<string>();
 
   return rows.filter((row) => {
@@ -1127,6 +1176,241 @@ function getNumericHeaderOrSummaryValue(node: ExplorerTreeNode, keys: string[]):
   }
 
   return null;
+}
+
+function getRawContainers(details: ExplorerDetails | null, node?: ExplorerTreeNode): Array<Record<string, unknown>> {
+  const containers: Array<Record<string, unknown>> = [];
+  if (node?.summary) containers.push(node.summary);
+  if (details?.rawSummary) containers.push(details.rawSummary);
+  if (details?.rawLatest) containers.push(details.rawLatest);
+  const latestData = details?.rawLatest?.data;
+  if (isRecord(latestData)) containers.push(latestData);
+  return containers;
+}
+
+function getMetricFromContainers(containers: Array<Record<string, unknown>>, keys: string[]): number | null {
+  const normalizedKeys = new Set(keys.map(normalizeMetricKey));
+  for (const container of containers) {
+    for (const [key, value] of Object.entries(container)) {
+      if (!normalizedKeys.has(normalizeMetricKey(key))) continue;
+      const numeric = toFiniteNumber(value);
+      if (numeric !== null && Number.isFinite(numeric)) return numeric;
+    }
+  }
+  return null;
+}
+
+function getMetricFromNodeAndDetails(details: ExplorerDetails | null, node: ExplorerTreeNode | undefined, keys: string[]): number | null {
+  if (!node) return null;
+  const fromNode = getNumericHeaderOrSummaryValue(node, keys);
+  if (fromNode !== null) return fromNode;
+  return getMetricFromContainers(getRawContainers(details, node), keys);
+}
+
+function getStringFromContainers(containers: Array<Record<string, unknown>>, keys: string[]): string | null {
+  const normalizedKeys = new Set(keys.map(normalizeMetricKey));
+  for (const container of containers) {
+    for (const [key, value] of Object.entries(container)) {
+      if (!normalizedKeys.has(normalizeMetricKey(key))) continue;
+      const text = asString(value);
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+function getStringMetric(node: ExplorerTreeNode, keys: string[]): string | null {
+  const normalizedKeys = new Set(keys.map(normalizeMetricKey));
+  for (const field of node.header ?? []) {
+    if (normalizedKeys.has(normalizeMetricKey(field.key)) || normalizedKeys.has(normalizeMetricKey(field.label))) {
+      const text = asString(field.value);
+      if (text) return text;
+    }
+  }
+  if (!node.summary) return null;
+  return getStringFromContainers([node.summary], keys);
+}
+
+function getStringMetricFromDetails(details: ExplorerDetails | null, node: ExplorerTreeNode, keys: string[]): string | null {
+  const fromNode = getStringMetric(node, keys);
+  if (fromNode) return shortenAddressLike(fromNode);
+  for (const field of details?.rawHeader ?? []) {
+    const normalizedKeys = new Set(keys.map(normalizeMetricKey));
+    if (normalizedKeys.has(normalizeMetricKey(field.key)) || normalizedKeys.has(normalizeMetricKey(field.label))) {
+      const text = asString(field.value);
+      if (text) return shortenAddressLike(text);
+    }
+  }
+  return shortenAddressLike(getStringFromContainers(getRawContainers(details, node), keys));
+}
+
+function getChildAmountUsd(child: ExplorerTreeNode, keys: string[]): number | null {
+  return getNumericHeaderOrSummaryValue(child, keys);
+}
+
+function getChildWeight(child: ExplorerTreeNode, keys: string[]): number | null {
+  return getNumericHeaderOrSummaryValue(child, keys);
+}
+
+function normalizeExposureItems(items: ExposureMixItem[]): ExposureMixItem[] {
+  const positive = items.filter((item) => Number.isFinite(item.value) && item.value > 0);
+  const total = positive.reduce((sum, item) => sum + item.value, 0);
+  if (total <= 0) return [];
+  return positive.map((item) => ({ ...item, value: item.value / total }));
+}
+
+function isExposureMixItem(item: ExposureMixItem | null): item is ExposureMixItem {
+  return item !== null;
+}
+
+function getBalanceTimesPrice(node: ExplorerTreeNode): number | null {
+  const balance = getNumericHeaderOrSummaryValue(node, ["balance", "amount", "quantity"]);
+  const price = getNumericHeaderOrSummaryValue(node, ["priceUsd", "price_usd", "usdPrice", "usd_price"]);
+  return balance !== null && price !== null && balance > 0 && price > 0 ? balance * price : null;
+}
+
+function getBalanceTimesPriceFromDetails(details: ExplorerDetails | null, node: ExplorerTreeNode): number | null {
+  const containers = getRawContainers(details, node);
+  const balance = getMetricFromContainers(containers, ["balance", "amount", "quantity"]);
+  const price = getMetricFromContainers(containers, ["priceUsd", "price_usd", "usdPrice", "usd_price"]);
+  return balance !== null && price !== null && balance > 0 && price > 0 ? balance * price : null;
+}
+
+function shortenAddressLike(value: string | null): string | null {
+  if (!value) return null;
+  return /^0x[a-fA-F0-9]{20,}$/.test(value) ? formatAddress(value) : value;
+}
+
+function getTokenPairLabel(node: ExplorerTreeNode): string | null {
+  const token0 = getStringMetric(node, ["token0", "token0Symbol", "token0_symbol"]);
+  const token1 = getStringMetric(node, ["token1", "token1Symbol", "token1_symbol"]);
+  return token0 && token1 ? `${token0}/${token1}` : null;
+}
+
+function buildStrategyGroupExposureMix(node: ExplorerTreeNode): ExposureMixItem[] {
+  const strategies = (node.children ?? []).filter((child) => child.type === "strategy");
+  const explicitWeights = strategies
+    .map<ExposureMixItem | null>((child) => {
+      const weight = getChildWeight(child, ["weight", "strategyWeight", "strategy_weight", "accountWeight", "account_weight"]);
+      return weight !== null
+        ? { key: child.uiKey, label: child.label, value: weight, amountUsd: getTreeAumValue(child), kind: "strategy_group_strategies" as const }
+        : null;
+    })
+    .filter(isExposureMixItem);
+  if (explicitWeights.length > 0) return normalizeExposureItems(explicitWeights);
+
+  return normalizeExposureItems(strategies
+    .map<ExposureMixItem | null>((child) => {
+      const amountUsd = getTreeAumValue(child);
+      return amountUsd !== null && amountUsd > 0
+        ? { key: child.uiKey, label: child.label, value: amountUsd, amountUsd, kind: "strategy_group_strategies" as const }
+        : null;
+    })
+    .filter(isExposureMixItem));
+}
+
+function buildPortfolioExposureMix(details: ExplorerDetails | null, node: ExplorerTreeNode, kind: "strategy_exposure" | "account_exposure"): ExposureMixItem[] {
+  const explicit = [
+    { key: "assets", label: "Assets", value: getMetricFromNodeAndDetails(details, node, ["assetsWeight", "assets_weight", "walletWeight", "wallet_weight", "spotWeight", "spot_weight", "balancesWeight", "balances_weight"]) },
+    { key: "lp", label: "LP", value: getMetricFromNodeAndDetails(details, node, ["lpWeight", "lp_weight", "liquidityWeight", "liquidity_weight"]) },
+    { key: "perp", label: "Perp", value: getMetricFromNodeAndDetails(details, node, ["perpWeight", "perp_weight", "futuresWeight", "futures_weight", "hedgeWeight", "hedge_weight"]) },
+    { key: "options", label: "Options", value: getMetricFromNodeAndDetails(details, node, ["optionsWeight", "options_weight", "optionWeight", "option_weight"]) },
+  ]
+    .filter((item): item is { key: string; label: string; value: number } => item.value !== null && item.value > 0)
+    .map((item) => ({ ...item, kind }));
+  if (explicit.length > 0) return normalizeExposureItems(explicit);
+
+  return normalizeExposureItems([
+    { key: "assets", label: "Assets", amountUsd: getMetricFromNodeAndDetails(details, node, ["assetsAumUsd", "assets_aum_usd", "walletNavUsd", "wallet_nav_usd", "spotNavUsd", "spot_nav_usd"]) },
+    { key: "lp", label: "LP", amountUsd: getMetricFromNodeAndDetails(details, node, ["lpNavUsd", "lp_nav_usd", "liquidityNavUsd", "liquidity_nav_usd", "lpFeesUsd", "lp_fees_usd"]) },
+    { key: "perp", label: "Perp", amountUsd: getMetricFromNodeAndDetails(details, node, ["perpNavUsd", "perp_nav_usd", "futuresNavUsd", "futures_nav_usd", "hedgeNavUsd", "hedge_nav_usd"]) },
+    { key: "options", label: "Options", amountUsd: getMetricFromNodeAndDetails(details, node, ["optionsNavUsd", "options_nav_usd", "optionNavUsd", "option_nav_usd"]) },
+  ]
+    .filter((item): item is { key: string; label: string; amountUsd: number } => item.amountUsd !== null && item.amountUsd > 0)
+    .map((item) => ({ key: item.key, label: item.label, value: item.amountUsd, amountUsd: item.amountUsd, kind })));
+}
+
+function buildStrategyExposureMix(details: ExplorerDetails | null, node: ExplorerTreeNode): ExposureMixItem[] {
+  return buildPortfolioExposureMix(details, node, "strategy_exposure");
+}
+
+function buildAccountExposureMix(details: ExplorerDetails | null, node: ExplorerTreeNode): ExposureMixItem[] {
+  return buildPortfolioExposureMix(details, node, "account_exposure");
+}
+
+function buildLpPoolExposureMix(details: ExplorerDetails | null, node: ExplorerTreeNode): ExposureMixItem[] {
+  const childItems = (node.children ?? [])
+    .map<ExposureMixItem | null>((child) => {
+      const amountUsd = getChildAmountUsd(child, ["lpNavUsd", "lp_nav_usd", "navUsd", "nav_usd", "aumUsd", "aum_usd", "valueUsd", "value_usd"]);
+      const label = getStringMetric(child, ["poolLabel", "pool", "tokenPair"]) ?? getTokenPairLabel(child) ?? child.label;
+      return amountUsd !== null && amountUsd > 0
+        ? { key: child.uiKey, label, value: amountUsd, amountUsd, kind: "lp_pools" as const }
+        : null;
+    })
+    .filter(isExposureMixItem);
+  if (childItems.length > 0) return normalizeExposureItems(childItems);
+
+  const poolLabel = getStringMetricFromDetails(details, node, ["poolLabel", "pool", "poolAddress"]) ?? getTokenPairLabel(node);
+  const lpNavUsd = getMetricFromNodeAndDetails(details, node, ["lpNavUsd", "lp_nav_usd", "navUsd", "nav_usd"]);
+  return poolLabel && lpNavUsd !== null && lpNavUsd > 0
+    ? [{ key: "pool", label: poolLabel, value: 1, amountUsd: lpNavUsd, kind: "lp_pools" }]
+    : [];
+}
+
+function buildPerpMarginExposureMix(details: ExplorerDetails | null, node: ExplorerTreeNode): ExposureMixItem[] {
+  const assetMargins = (node.children ?? [])
+    .map<ExposureMixItem | null>((child) => {
+      const marginUsd = getChildAmountUsd(child, ["marginUsd", "margin_usd"]);
+      const label = getStringMetric(child, ["assetSymbol", "asset_symbol", "marketSymbol", "market_symbol"]) ?? child.label;
+      return marginUsd !== null && marginUsd > 0
+        ? { key: child.uiKey, label, value: marginUsd, amountUsd: marginUsd, kind: "perp_margin" as const }
+        : null;
+    })
+    .filter(isExposureMixItem);
+  const totalMarginUsd = assetMargins.reduce((sum, item) => sum + (item.amountUsd ?? 0), 0);
+  const totalNavUsd = getMetricFromNodeAndDetails(details, node, ["navUsd", "nav_usd", "aumUsd", "aum_usd", "walletNavUsd", "wallet_nav_usd"]);
+
+  if (totalNavUsd !== null && totalNavUsd > 0) {
+    const freeUsd = Math.max(totalNavUsd - totalMarginUsd, 0);
+    const items = assetMargins.map((item) => ({ ...item, value: (item.amountUsd ?? 0) / totalNavUsd }));
+    if (freeUsd > 0) items.push({ key: "free", label: "Free", value: freeUsd / totalNavUsd, amountUsd: freeUsd, kind: "perp_margin" });
+    return items.filter((item) => item.value > 0);
+  }
+
+  return normalizeExposureItems(assetMargins);
+}
+
+function buildAssetsExposureMix(details: ExplorerDetails | null, node: ExplorerTreeNode): ExposureMixItem[] {
+  const childItems = (node.children ?? [])
+    .map<ExposureMixItem | null>((child) => {
+      const amountUsd = getChildAmountUsd(child, ["aumUsd", "aum_usd", "valueUsd", "value_usd", "navUsd", "nav_usd"]) ?? getBalanceTimesPrice(child);
+      const label = getStringMetric(child, ["assetSymbol", "asset_symbol", "normalizedAssetSymbol", "normalized_asset_symbol"]) ?? child.label;
+      return amountUsd !== null && amountUsd > 0
+        ? { key: child.uiKey, label, value: amountUsd, amountUsd, kind: "assets" as const }
+        : null;
+    })
+    .filter(isExposureMixItem);
+  if (childItems.length > 0) return normalizeExposureItems(childItems);
+
+  const assetLabel = getStringMetricFromDetails(details, node, ["assetSymbol", "asset_symbol", "normalizedAssetSymbol", "normalized_asset_symbol"]);
+  const amountUsd = getMetricFromNodeAndDetails(details, node, ["aumUsd", "aum_usd", "valueUsd", "value_usd"]) ?? getBalanceTimesPriceFromDetails(details, node);
+  return assetLabel && amountUsd !== null && amountUsd > 0
+    ? [{ key: assetLabel, label: assetLabel, value: 1, amountUsd, kind: "assets" }]
+    : [];
+}
+
+function buildExposureMix(details: ExplorerDetails | null, selectedNode?: ExplorerTreeNode): ExposureMixItem[] {
+  if (!selectedNode) return [];
+  const type = selectedNode.type.toLowerCase();
+  const protocolType = selectedNode.protocolType?.toLowerCase();
+
+  if (type === "strategy_group") return buildStrategyGroupExposureMix(selectedNode);
+  if (type === "strategy") return buildStrategyExposureMix(details, selectedNode);
+  if (type === "account") return buildAccountExposureMix(details, selectedNode);
+  if (type === "position_group" && protocolType === "lp") return buildLpPoolExposureMix(details, selectedNode);
+  if (type === "position_group" && (protocolType === "futures" || protocolType === "perp")) return buildPerpMarginExposureMix(details, selectedNode);
+  if (type === "balance_group") return buildAssetsExposureMix(details, selectedNode);
+  return [];
 }
 
 function getTreeAumValue(node: ExplorerTreeNode): number | null {
@@ -1707,6 +1991,79 @@ function NodeMetricsTable({ metrics }: { metrics: Metric[] }): JSX.Element {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+const EXPOSURE_COLORS = [
+  "bg-cyan-400",
+  "bg-violet-400",
+  "bg-emerald-400",
+  "bg-amber-400",
+  "bg-sky-400",
+  "bg-rose-400",
+  "bg-fuchsia-400",
+  "bg-slate-400",
+];
+
+function compactExposureItems(items: ExposureMixItem[], maxItems = 8): ExposureMixItem[] {
+  const sorted = [...items].sort((a, b) => b.value - a.value);
+  if (sorted.length <= maxItems) return sorted;
+  const head = sorted.slice(0, maxItems - 1);
+  const tail = sorted.slice(maxItems - 1);
+  const otherValue = tail.reduce((sum, item) => sum + item.value, 0);
+  const otherAmount = tail.reduce((sum, item) => sum + (item.amountUsd ?? 0), 0);
+  return [...head, { key: "other", label: "Other", value: otherValue, amountUsd: otherAmount > 0 ? otherAmount : null }];
+}
+
+function getExposureSegmentClass(item: ExposureMixItem, index: number): string {
+  const knownClasses: Record<string, string> = {
+    assets: "bg-sky-400",
+    lp: "bg-emerald-400",
+    perp: "bg-violet-400",
+    options: "bg-amber-400",
+    free: "bg-slate-500",
+  };
+  return knownClasses[item.key] ?? EXPOSURE_COLORS[index % EXPOSURE_COLORS.length];
+}
+
+function getExposureTitle(item: ExposureMixItem): string {
+  const percent = `${(item.value * 100).toFixed(1)}%`;
+  const amount = item.amountUsd !== null && item.amountUsd !== undefined ? ` / ${formatUsdOrNA(item.amountUsd)}` : "";
+  return `${item.label}: ${percent}${amount}`;
+}
+
+function ExposureMixBar({ items }: { items: ExposureMixItem[] }): JSX.Element | null {
+  const visibleItems = compactExposureItems(items.filter((item) => Number.isFinite(item.value) && item.value > 0));
+
+  if (visibleItems.length === 0) return null;
+
+  return (
+    <div className="mt-4 min-w-0">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+        Exposure mix
+      </div>
+      <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/10">
+        {visibleItems.map((item, index) => (
+          <div
+            key={item.key}
+            className={getExposureSegmentClass(item, index)}
+            style={{ width: `${Math.max(0, item.value * 100)}%` }}
+            title={getExposureTitle(item)}
+          />
+        ))}
+      </div>
+      <div className="mt-2 flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-xs">
+        {visibleItems.map((item, index) => (
+          <div key={item.key} className="flex min-w-0 items-center gap-2 text-slate-300" title={getExposureTitle(item)}>
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", getExposureSegmentClass(item, index))} />
+            <span className="font-medium text-slate-200">{item.label}</span>
+            <span className="shrink-0 tabular-nums text-slate-500">
+              {(item.value * 100).toFixed(1)}%
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2495,13 +2852,11 @@ export function StrategiesPage(): JSX.Element {
           hasNextHistoryPage={historyPagination.hasNextPage}
           hasPreviousHistoryPage={historyPagination.hasPreviousPage}
           nodes={treeNodes}
-          selectedNodeKey={selectedNodeKey}
           selectedNode={selectedTreeNode ?? undefined}
           selectedNodeWarnings={selectedNodeWarnings}
           selectedDataset={selectedDataset}
           treeError={treeError}
           totalHistoryPages={totalHistoryPages}
-          onDatasetChange={handleDatasetChange}
           onHistorySearchInputChange={handleHistorySearchInputChange}
           onHistoryPageChange={handleHistoryPageChange}
           onHistoryPageSizeChange={handleHistoryPageSizeChange}
@@ -2517,6 +2872,119 @@ function StatusPill({ active, label }: { active: boolean; label: string }): JSX.
     <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.045] px-3 py-1.5 text-xs text-slate-300">
       {active ? <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" /> : <TrendingUp className="h-3.5 w-3.5 text-emerald-300" />}
       {label}
+    </div>
+  );
+}
+
+function ExplorerNodeSelector({
+  nodes,
+  selectedNode,
+  onSelectNode,
+}: {
+  nodes: FlatExplorerNode[];
+  selectedNode?: ExplorerTreeNode;
+  onSelectNode: (node: ExplorerTreeNode) => void;
+}): JSX.Element {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const selectedKey = selectedNode?.uiKey ?? null;
+  const selectedType = selectedNode ? formatExplorerNodeKind(selectedNode) : "Select node";
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredNodes = normalizedSearch
+    ? nodes.filter((node) => (
+        node.label.toLowerCase().includes(normalizedSearch) ||
+        node.pathLabel.toLowerCase().includes(normalizedSearch) ||
+        formatExplorerNodeKind(node).toLowerCase().includes(normalizedSearch)
+      ))
+    : nodes;
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    const onPointerDown = (event: MouseEvent): void => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="relative min-w-0">
+      <button
+        type="button"
+        disabled={nodes.length === 0}
+        onClick={() => setIsOpen((value) => !value)}
+        className={cn(
+          "flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-left transition",
+          "hover:border-cyan-300/30 hover:bg-cyan-300/5 disabled:cursor-not-allowed disabled:opacity-50",
+          isOpen ? "border-cyan-300/40 bg-cyan-300/10" : null,
+        )}
+      >
+        <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+          <span className="block truncate text-sm font-semibold text-white">{selectedNode?.label ?? "Select a node"}</span>
+          <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">{selectedType}</span>
+        </span>
+        <ChevronDown className={cn("h-4 w-4 shrink-0 text-slate-400 transition", isOpen ? "rotate-180 text-cyan-100" : null)} />
+      </button>
+
+      {isOpen ? (
+        <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-white/10 bg-slate-950 shadow-2xl shadow-black/60">
+          <div className="border-b border-white/10 p-3">
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search nodes..."
+              autoFocus
+              className="h-9 w-full rounded-lg border border-white/10 bg-slate-900 px-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40"
+            />
+          </div>
+          <div className="max-h-80 overflow-y-auto p-1">
+            {filteredNodes.map((node) => {
+              const selected = node.uiKey === selectedKey;
+              const parentPath = node.pathLabel.split(" / ").slice(0, -1).join(" / ");
+
+              return (
+                <button
+                  key={node.uiKey}
+                  type="button"
+                  onClick={() => {
+                    onSelectNode(node);
+                    setIsOpen(false);
+                    setSearch("");
+                  }}
+                  className={cn(
+                    "grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2 text-left transition",
+                    selected ? "bg-cyan-300/12 text-white" : "text-slate-300 hover:bg-white/[0.055] hover:text-white",
+                  )}
+                  style={{ paddingLeft: `${12 + node.depth * 12}px` }}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">{node.label}</span>
+                    <span className="mt-0.5 block truncate text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                      {formatExplorerNodeKind(node)}{parentPath ? ` / ${parentPath}` : ""}
+                    </span>
+                  </span>
+                  {node.hasCollectionError ? <StatusBadge label="Error" tone="warning" title={node.latestErrorMessage ?? undefined} /> : null}
+                </button>
+              );
+            })}
+            {filteredNodes.length === 0 ? (
+              <div className="px-3 py-4 text-sm text-slate-500">No nodes match your search</div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2541,11 +3009,9 @@ function DataExplorer({
   nodes,
   selectedDataset,
   selectedNode,
-  selectedNodeKey,
   selectedNodeWarnings,
   totalHistoryPages,
   treeError,
-  onDatasetChange,
   onHistorySearchInputChange,
   onHistoryPageChange,
   onHistoryPageSizeChange,
@@ -2570,126 +3036,89 @@ function DataExplorer({
   nodes: ExplorerTreeNode[];
   selectedDataset: string | null;
   selectedNode?: ExplorerTreeNode;
-  selectedNodeKey: string | null;
   selectedNodeWarnings: StructuredWarning[];
   totalHistoryPages: number;
   treeError: string | null;
-  onDatasetChange: (dataset: string) => void;
   onHistorySearchInputChange: (value: string) => void;
   onHistoryPageChange: (page: number) => void;
   onHistoryPageSizeChange: (pageSize: (typeof HISTORY_PAGE_SIZES)[number]) => void;
   onSelectNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
+  const flatNodes = useMemo(() => flattenExplorerNodes(nodes), [nodes]);
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
   const canGoBack = hasPreviousHistoryPage;
   const canGoForward = hasNextHistoryPage;
   const currentNodeMetrics = buildNodeCurrentMetrics(details, selectedNode);
-  // const selectedHeaderFields = selectedNode?.headerFields.length ? selectedNode.headerFields : details?.headerFields ?? [];
-  // const selectedSummaryCards = selectedNode?.summaryCards.length ? selectedNode.summaryCards : details?.summaryCards ?? [];
+  const exposureMix = buildExposureMix(details, selectedNode);
   const warningsToShow = selectedNodeWarnings.length > 0
     ? selectedNodeWarnings
     : details?.warnings.map((message) => ({ level: "warning", code: "warning", message })) ?? [];
 
   return (
     <section className="mt-6 min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
-      <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
-        <div>
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Track Records Explorer</div>
-          <p className="mt-2 text-sm text-slate-500">Inspect the raw data behind the strategy: balances, positions, snapshots, and collection history</p>
-          {globalWarnings.length > 0 ? (
-            <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
-              Data Quality: {globalWarnings.map((warning) => warning.message).join(" ")}
-            </div>
-          ) : null}
-        </div>
+      <div className="mb-5">
+        <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Track Record Explorer</div>
+        <p className="mt-2 text-sm text-slate-500">
+          See what the strategy is really made of: raw balances, positions, snapshots, and collection history.
+        </p>
+        {globalWarnings.length > 0 ? (
+          <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+            Data Quality: {globalWarnings.map((warning) => warning.message).join(" ")}
+          </div>
+        ) : null}
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <aside className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
-          {isLoadingTree ? <div className="p-3 text-sm text-slate-500">Loading explorer data...</div> : null}
-          {treeError ? <div className="p-3 text-sm text-amber-100">{treeError}</div> : null}
-          {!isLoadingTree && !treeError && nodes.length === 0 ? <div className="p-3 text-sm text-slate-500">No explorer tree available</div> : null}
-          <div className="space-y-1">
-            {nodes.map((node) => (
-              <TreeNodeButton key={node.uiKey} node={node} depth={0} selectedNodeKey={selectedNodeKey} onSelectNode={onSelectNode} />
-            ))}
-          </div>
-        </aside>
+      <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className="min-w-0 rounded-xl border border-white/10 bg-slate-950/40 p-4">
+          <ExplorerNodeSelector nodes={flatNodes} selectedNode={selectedNode} onSelectNode={onSelectNode} />
 
-        <div className="min-w-0 space-y-5">
-          <div className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
+          {isLoadingTree ? <div className="mt-4 text-sm text-slate-500">Loading explorer data...</div> : null}
+          {treeError ? <div className="mt-4 text-sm text-amber-100">{treeError}</div> : null}
+          {!isLoadingTree && !treeError && nodes.length === 0 ? <div className="mt-4 text-sm text-slate-500">No explorer tree available</div> : null}
+
+          <div className="mt-5 min-w-0">
             {isLoadingDetails ? <div className="text-sm text-slate-500">Loading node details...</div> : null}
             {detailsError ? <div className="text-sm text-amber-100">{detailsError}</div> : null}
             {!isLoadingDetails && !detailsError ? (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="text-lg font-semibold text-white">{details?.title ?? selectedNode?.label ?? "Select a node"}</div>
-                    <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">
-                      {formatNodeTypeLabel(details?.type ?? selectedNode?.type ?? "No node selected")}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {selectedNode?.status ? <StatusBadge label={`Financial status: ${selectedNode.status}`} tone={getStatusTone(selectedNode.status)} /> : null}
-                      {selectedNode?.collectionStatus ? <StatusBadge label={`Collection: ${selectedNode.collectionStatus}`} tone={getStatusTone(selectedNode.collectionStatus)} /> : null}
-                      {selectedNode?.hasCollectionError ? <StatusBadge label="Collection error" tone="warning" title={selectedNode.latestErrorMessage ?? undefined} /> : null}
-                    </div>
-                    {details?.subtitle ? <div className="mt-1 text-xs text-slate-500">{details.subtitle}</div> : null}
-                  </div>
-                </div>
-                <div className="mt-4">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
-                    Current metrics
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    Latest verified values for the selected element.
-                  </div>
-
-                  <NodeMetricsTable metrics={currentNodeMetrics} />
-                </div>
-                {warningsToShow.length ? (
-                  <div className="mt-4 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
-                    {warningsToShow.map((warning) => `${warning.level}: ${warning.message}`).join(" ")}
-                  </div>
-                ) : null}
-              </>
+              <div className="min-w-0">
+                {details?.subtitle ? <div className="text-xs text-slate-500">{details.subtitle}</div> : null}
+              </div>
             ) : null}
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
-            <div className="mb-4 flex flex-col justify-between gap-3 md:flex-row md:items-center">
-              <div>
-                <div className="text-sm font-semibold text-white">History</div>
-                <div className="mt-1 text-xs text-slate-500">{selectedNode?.label ?? "Select a node"}</div>
-              </div>
+          {exposureMix.length > 0 ? <ExposureMixBar items={exposureMix} /> : null}
+
+          <div className="mt-5">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+              Current metrics
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Latest verified values for the selected element.
+            </div>
+            <NodeMetricsTable metrics={currentNodeMetrics} />
+          </div>
+
+          {warningsToShow.length ? (
+            <div className="mt-4 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+              {warningsToShow.map((warning) => `${warning.level}: ${warning.message}`).join(" ")}
+            </div>
+          ) : null}
+        </aside>
+
+        <section className="min-w-0 rounded-xl border border-white/10 bg-white/[0.025] p-4">
+          <div className="mb-4 flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-white">Historical records</div>
+              <div className="mt-1 truncate text-xs text-slate-500">{selectedNode?.label ?? "Select a node"}</div>
+            </div>
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
               <input
                 value={historySearch}
                 onChange={(event) => onHistorySearchInputChange(event.target.value)}
                 placeholder="Search history..."
-                className="h-10 rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40 md:w-72"
+                className="h-10 min-w-0 rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40 sm:w-64"
               />
-            </div>
-            {details && details.datasets.length > 1 ? (
-              <div className="mb-4 flex flex-wrap gap-2">
-                {details.datasets.map((dataset) => (
-                  <button
-                    key={dataset.id}
-                    type="button"
-                    onClick={() => onDatasetChange(dataset.id)}
-                    className={cn(
-                      "rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                      selectedDataset === dataset.id
-                        ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
-                        : "border-white/10 bg-white/[0.035] text-slate-400 hover:border-cyan-300/30 hover:text-white",
-                    )}
-                  >
-                    {dataset.label}{dataset.count !== null && dataset.count !== undefined ? ` (${dataset.count})` : ""}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            <div className="mb-3 flex flex-col justify-between gap-3 text-xs text-slate-500 sm:flex-row sm:items-center">
-              <div>{historyRangeLabel}</div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
                 <span>Rows</span>
                 <select
                   value={historyPageSize}
@@ -2724,12 +3153,14 @@ function DataExplorer({
                 </button>
               </div>
             </div>
-            {isLoadingHistory ? <div className="text-sm text-slate-500">Loading history...</div> : null}
-            {historyError ? <div className="text-sm text-amber-100">{historyError}</div> : null}
-            {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}</div> : null}
-            {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} showMessageColumn={hasHistoryMessageColumn} /> : null}
           </div>
-        </div>
+
+          <div className="mb-3 text-xs text-slate-500">{historyRangeLabel}</div>
+          {isLoadingHistory ? <div className="text-sm text-slate-500">Loading history...</div> : null}
+          {historyError ? <div className="text-sm text-amber-100">{historyError}</div> : null}
+          {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}</div> : null}
+          {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} showMessageColumn={hasHistoryMessageColumn} /> : null}
+        </section>
       </div>
     </section>
   );
