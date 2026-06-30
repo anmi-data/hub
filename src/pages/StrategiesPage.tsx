@@ -18,6 +18,24 @@ type StrategySummary = {
   updatedAt?: string | null;
 };
 
+type StrategyGroupDataQualityLabel = "excellent" | "good" | "degraded" | "poor" | "unknown";
+
+type StrategyGroupDataQuality = {
+  score: number | null;
+  label: StrategyGroupDataQualityLabel;
+  latestBatchScore: number | null;
+  emaPeriod: number | null;
+  alpha: number | null;
+  samples: number | null;
+  components: {
+    availability: number | null;
+    status: number | null;
+    warnings: number | null;
+  };
+  metricsReliable: boolean | null;
+  warnings: string[];
+};
+
 type StrategyGroupHeader = {
   id: string;
   name: string;
@@ -36,7 +54,7 @@ type StrategyGroupHeader = {
   sortinoRatio?: number | null;
   maxDrawdown?: number | null;
   currentDrawdown?: number | null;
-  dataQuality?: string | number | boolean | null;
+  dataQuality?: StrategyGroupDataQuality | string | number | boolean | null;
   updatedAt?: string | null;
   warnings?: string[];
   isLiveTrackRecord?: boolean;
@@ -296,6 +314,40 @@ function firstNumber(...values: unknown[]): number | null {
   return null;
 }
 
+function nullableNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : asNumber(value) ?? null;
+}
+
+function normalizeDataQualityLabel(value: unknown): StrategyGroupDataQualityLabel {
+  const label = asString(value)?.toLowerCase();
+  return label === "excellent" || label === "good" || label === "degraded" || label === "poor" || label === "unknown"
+    ? label
+    : "unknown";
+}
+
+function normalizeDataQuality(value: Record<string, unknown>, fallback: unknown): StrategyGroupDataQuality | string | number | boolean | null {
+  if (Object.keys(value).length === 0) {
+    return asString(fallback) ?? asNumber(fallback) ?? null;
+  }
+
+  const components = isRecord(value.components) ? value.components : {};
+  return {
+    score: nullableNumber(value.score),
+    label: normalizeDataQualityLabel(value.label),
+    latestBatchScore: nullableNumber(value.latestBatchScore ?? value.latest_batch_score),
+    emaPeriod: nullableNumber(value.emaPeriod ?? value.ema_period),
+    alpha: nullableNumber(value.alpha),
+    samples: nullableNumber(value.samples),
+    components: {
+      availability: nullableNumber(components.availability),
+      status: nullableNumber(components.status),
+      warnings: nullableNumber(components.warnings),
+    },
+    metricsReliable: typeof value.metricsReliable === "boolean" ? value.metricsReliable : null,
+    warnings: Array.isArray(value.warnings) ? value.warnings.map(asString).filter((item): item is string => Boolean(item)) : [],
+  };
+}
+
 function getRecordValue(value: unknown, keys: string[]): unknown {
   if (!isRecord(value)) return undefined;
   for (const key of keys) {
@@ -410,7 +462,7 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
     sortinoRatio: firstNumber(metrics.sortinoRatio, metrics.sortino_ratio, metrics.sortino, root.sortinoRatio, root.sortino_ratio, root.sortino),
     maxDrawdown: firstNumber(metrics.maxDrawdownPct, metrics.maxDrawdown, metrics.max_drawdown, root.maxDrawdownPct, root.maxDrawdown, root.max_drawdown, fallback?.maxDrawdown),
     currentDrawdown: firstNumber(metrics.currentDrawdownPct, metrics.currentDrawdown, metrics.current_drawdown, root.currentDrawdownPct, root.currentDrawdown, root.current_drawdown, fallback?.currentDrawdown),
-    dataQuality: typeof dataQuality.metricsReliable === "boolean" ? dataQuality.metricsReliable : asString(root.dataQuality) ?? asNumber(root.dataQuality) ?? null,
+    dataQuality: normalizeDataQuality(dataQuality, root.dataQuality),
     updatedAt: asString(root.updatedAt) ?? asString(root.updated_at) ?? asString(root.timestamp) ?? asString(summary.timestamp) ?? asString(summary.updatedAt) ?? asString(summary.updated_at) ?? asString(group.latestSnapshotAt) ?? asString(group.latest_snapshot_at) ?? asString(liveTrackRecord.latestSnapshotAt) ?? fallback?.updatedAt ?? null,
     warnings,
     isLiveTrackRecord: typeof liveTrackRecord.isLive === "boolean" ? liveTrackRecord.isLive : undefined,
@@ -983,6 +1035,11 @@ function formatPercentOrNA(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value) ? "N/A" : formatPercent(value);
 }
 
+function formatRatioPercent(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "Unknown";
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
 function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined) return "N/A";
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(value);
@@ -1002,10 +1059,34 @@ function formatUsdOrNA(value: number | null | undefined): string {
   });
 }
 
-function formatDataQuality(value: string | number | boolean | null | undefined): string {
+function isStrategyGroupDataQuality(value: unknown): value is StrategyGroupDataQuality {
+  return isRecord(value) && "components" in value && "metricsReliable" in value;
+}
+
+function formatDataQuality(value: StrategyGroupHeader["dataQuality"]): string {
   if (value === null || value === undefined) return "N/A";
+  if (isStrategyGroupDataQuality(value)) return formatRatioPercent(value.score);
   if (typeof value === "boolean") return value ? "Reliable" : "Review";
   return String(value);
+}
+
+function formatDataQualityDetail(value: number | null | undefined): string {
+  return value === null || value === undefined ? "Unknown" : formatRatioPercent(value);
+}
+
+function formatDataQualityHint(value: StrategyGroupDataQuality): string {
+  const details = [
+    `Label: ${value.label}`,
+    `Samples: ${value.samples ?? "Unknown"} batches`,
+  ];
+  if (value.latestBatchScore !== null) details.push(`Latest batch: ${formatDataQualityDetail(value.latestBatchScore)}`);
+  if (value.components.availability !== null) details.push(`Availability: ${formatDataQualityDetail(value.components.availability)}`);
+  if (value.components.status !== null) details.push(`Status: ${formatDataQualityDetail(value.components.status)}`);
+  if (value.components.warnings !== null) details.push(`Warnings: ${formatDataQualityDetail(value.components.warnings)}`);
+  if (value.metricsReliable !== null) details.push(`Metrics reliable: ${value.metricsReliable ? "Yes" : "No"}`);
+  if (value.emaPeriod !== null) details.push(`EMA period: ${value.emaPeriod}`);
+  if (value.alpha !== null) details.push(`Alpha: ${formatNumberOrNA(value.alpha, 4)}`);
+  return details.join(" | ");
 }
 
 function formatValue(value: unknown): string {
@@ -1954,7 +2035,7 @@ function MetricsTable({
         <table className="w-full text-sm">
           <tbody>
             {metrics.map((metric) => (
-              <tr key={metric.label} className="border-b border-white/10 last:border-b-0">
+              <tr key={metric.label} title={metric.hint} className="border-b border-white/10 last:border-b-0">
                 <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">{metric.label}</td>
                 <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-white">{metric.value}</td>
               </tr>
@@ -2236,7 +2317,16 @@ export function StrategiesPage(): JSX.Element {
     ];
 
     if (headerStrategy?.dataQuality !== undefined) {
-      metrics.push({ label: "Data Quality", value: formatDataQuality(headerStrategy.dataQuality), hint: "ANMI Track validation" });
+      const dataQuality = headerStrategy.dataQuality;
+      metrics.push({
+        label: "Data Quality",
+        value: formatDataQuality(dataQuality),
+        hint: isStrategyGroupDataQuality(dataQuality) ? formatDataQualityHint(dataQuality) : "ANMI Track validation",
+      });
+      if (isStrategyGroupDataQuality(dataQuality)) {
+        metrics.push({ label: "Quality Label", value: dataQuality.label, hint: "Data quality label returned by the API" });
+        metrics.push({ label: "Quality Samples", value: dataQuality.samples === null ? "Unknown" : String(dataQuality.samples), hint: "Number of batches included" });
+      }
     }
     if (warningsCount > 0) {
       metrics.push({ label: "Warnings", value: String(warningsCount), hint: "Header data quality notes" });
@@ -2244,6 +2334,9 @@ export function StrategiesPage(): JSX.Element {
 
     return metrics;
   }, [headerStrategy, isLoadingHeader, selectedStrategy]);
+  const dataQualityWarnings = isStrategyGroupDataQuality(headerStrategy?.dataQuality)
+    ? headerStrategy.dataQuality.warnings
+    : [];
 
   useEffect(() => {
     setHistoryPage(1);
@@ -2807,7 +2900,16 @@ export function StrategiesPage(): JSX.Element {
             ) : null}
           </div>
 
-          <MetricsTable metrics={primaryMetrics} />
+          <div className="min-w-0">
+            <MetricsTable metrics={primaryMetrics} />
+            {dataQualityWarnings.length > 0 ? (
+              <div className="mt-4 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+                {dataQualityWarnings.map((warning) => (
+                  <div key={warning}>{warning}</div>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/[0.025] p-4">
