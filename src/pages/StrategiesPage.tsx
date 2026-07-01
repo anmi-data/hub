@@ -1065,7 +1065,7 @@ function isStrategyGroupDataQuality(value: unknown): value is StrategyGroupDataQ
 
 function formatDataQuality(value: StrategyGroupHeader["dataQuality"]): string {
   if (value === null || value === undefined) return "N/A";
-  if (isStrategyGroupDataQuality(value)) return formatRatioPercent(value.score);
+  if (isStrategyGroupDataQuality(value)) return `${formatRatioPercent(value.score)} (${value.label})`;
   if (typeof value === "boolean") return value ? "Reliable" : "Review";
   return String(value);
 }
@@ -2323,10 +2323,6 @@ export function StrategiesPage(): JSX.Element {
         value: formatDataQuality(dataQuality),
         hint: isStrategyGroupDataQuality(dataQuality) ? formatDataQualityHint(dataQuality) : "ANMI Track validation",
       });
-      if (isStrategyGroupDataQuality(dataQuality)) {
-        metrics.push({ label: "Quality Label", value: dataQuality.label, hint: "Data quality label returned by the API" });
-        metrics.push({ label: "Quality Samples", value: dataQuality.samples === null ? "Unknown" : String(dataQuality.samples), hint: "Number of batches included" });
-      }
     }
     if (warningsCount > 0) {
       metrics.push({ label: "Warnings", value: String(warningsCount), hint: "Header data quality notes" });
