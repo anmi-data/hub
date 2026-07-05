@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle, ChevronDown, Circle, LineChart, Loader2, ShieldCheck, TrendingUp, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle, ChevronDown, Circle, LineChart, Loader2, ShieldCheck, TrendingUp, X, XCircle } from "lucide-react";
 import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/StrategyTimeSeriesChart";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
@@ -11,6 +11,9 @@ type StrategySummary = {
   description?: string;
   status?: string;
   apy?: number | null;
+  apy1dPct?: number | null;
+  apy7dPct?: number | null;
+  apy30dPct?: number | null;
   maxDrawdown?: number | null;
   currentDrawdown?: number | null;
   unitPrice?: number | null;
@@ -45,6 +48,9 @@ type StrategyGroupHeader = {
   navUsd?: number | null;
   totalReturn?: number | null;
   apy?: number | null;
+  apy1dPct?: number | null;
+  apy7dPct?: number | null;
+  apy30dPct?: number | null;
   cagr?: number | null;
   volatility?: number | null;
   volatilityAnnualized?: number | null;
@@ -417,6 +423,9 @@ function normalizeStrategyRecord(item: unknown): StrategySummary | undefined {
   if (description) strategy.description = description;
   if (status) strategy.status = status;
   strategy.apy = firstNumber(metrics.apyPct, metrics.apy, metrics.cagrPct, metrics.cagr, item.apyPct, item.cagrPct, item.cagr, item.apy, item.total_return, item.totalReturn);
+  strategy.apy1dPct = firstNumber(metrics.apy1dPct, item.apy1dPct);
+  strategy.apy7dPct = firstNumber(metrics.apy7dPct, item.apy7dPct);
+  strategy.apy30dPct = firstNumber(metrics.apy30dPct, item.apy30dPct);
   strategy.maxDrawdown = firstNumber(metrics.maxDrawdownPct, metrics.maxDrawdown, metrics.max_drawdown, item.maxDrawdownPct, item.max_drawdown, item.maxDrawdown);
   strategy.currentDrawdown = firstNumber(metrics.currentDrawdownPct, metrics.currentDrawdown, metrics.current_drawdown, item.currentDrawdownPct, item.current_drawdown, item.currentDrawdown);
   strategy.unitPrice = firstNumber(item.unit_price, item.unitPrice);
@@ -453,6 +462,9 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
     navUsd: firstNumber(summary.navUsd, summary.nav_usd, group.navUsd, group.nav_usd, root.navUsd, root.nav_usd, fallback?.navUsd),
     totalReturn: firstNumber(metrics.totalReturnPct, metrics.totalReturn, metrics.total_return, root.totalReturnPct, root.totalReturn, root.total_return),
     apy: firstNumber(metrics.apyPct, metrics.apy, root.apyPct, root.apy, fallback?.apy),
+    apy1dPct: firstNumber(metrics.apy1dPct, root.apy1dPct, fallback?.apy1dPct),
+    apy7dPct: firstNumber(metrics.apy7dPct, root.apy7dPct, fallback?.apy7dPct),
+    apy30dPct: firstNumber(metrics.apy30dPct, root.apy30dPct, fallback?.apy30dPct),
     cagr: firstNumber(metrics.cagrPct, metrics.cagr, root.cagrPct, root.cagr),
     volatility: firstNumber(metrics.volatilityAnnualizedPct, metrics.volatilityAnnualized, metrics.volatility, root.volatilityAnnualizedPct, root.volatility),
     volatilityAnnualized: firstNumber(metrics.volatilityAnnualizedPct, metrics.volatilityAnnualized, metrics.volatility_annualized, root.volatilityAnnualizedPct, root.volatilityAnnualized),
@@ -1033,6 +1045,11 @@ function formatPercent(value: number): string {
 
 function formatPercentOrNA(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value) ? "N/A" : formatPercent(value);
+}
+
+function formatPercentPointsOrNA(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+  return `${value.toFixed(2)}%`;
 }
 
 function formatRatioPercent(value: number | null | undefined, digits = 1): string {
@@ -2057,16 +2074,24 @@ function NodeMetricsTable({ metrics }: { metrics: Metric[] }): JSX.Element {
   }
 
   return (
-    <div className="mt-4 overflow-hidden rounded-xl border border-white/10">
-      <table className="w-full text-sm">
+    <div className="mt-4 min-w-0 max-w-full overflow-hidden rounded-xl border border-white/10">
+      <table className="w-full table-fixed text-sm">
+        <colgroup>
+          <col className="w-[38%]" />
+          <col className="w-[62%]" />
+        </colgroup>
         <tbody>
           {metrics.map((metric) => (
             <tr key={metric.label} className="border-b border-white/10 last:border-b-0">
-              <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">
-                {metric.label}
+              <td className="align-top px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">
+                <span className="block max-w-full whitespace-normal break-words [overflow-wrap:anywhere]">
+                  {metric.label}
+                </span>
               </td>
-              <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-white">
-                {metric.value}
+              <td className="min-w-0 align-top px-3 py-2.5 text-left font-semibold tabular-nums text-white sm:text-right">
+                <span className="block max-w-full whitespace-normal break-words [overflow-wrap:anywhere]">
+                  {metric.value}
+                </span>
               </td>
             </tr>
           ))}
@@ -2294,6 +2319,9 @@ export function StrategiesPage(): JSX.Element {
         "AUM",
         "Net Return",
         "APY",
+        "1D APY",
+        "1W APY",
+        "1M APY",
         "Max Drawdown",
         "Drawdown",
         "Volatility",
@@ -2305,10 +2333,16 @@ export function StrategiesPage(): JSX.Element {
 
     const source = headerStrategy ?? selectedStrategy;
     const warningsCount = headerStrategy?.warnings?.length ?? 0;
+    const apy1dPct = headerStrategy?.apy1dPct !== undefined ? headerStrategy.apy1dPct : selectedStrategy?.apy1dPct;
+    const apy7dPct = headerStrategy?.apy7dPct !== undefined ? headerStrategy.apy7dPct : selectedStrategy?.apy7dPct;
+    const apy30dPct = headerStrategy?.apy30dPct !== undefined ? headerStrategy.apy30dPct : selectedStrategy?.apy30dPct;
     const metrics: Metric[] = [
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
       { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
       { label: "Net APY", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
+      { label: "1D APY", value: formatPercentPointsOrNA(apy1dPct), hint: "Annualized return derived from the trailing 1-day Unit Price change." },
+      { label: "1W APY", value: formatPercentPointsOrNA(apy7dPct), hint: "Annualized return derived from the trailing 7-day Unit Price change." },
+      { label: "1M APY", value: formatPercentPointsOrNA(apy30dPct), hint: "Annualized return derived from the trailing 30-day Unit Price change." },
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
       { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
       { label: "Sharpe ratio", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
@@ -2359,6 +2393,20 @@ export function StrategiesPage(): JSX.Element {
       navigate(`/strategies/${selectedStrategy.id}`, { replace: true });
     }
   }, [isLoadingStrategies, navigate, selectedStrategy, strategyId]);
+
+  useEffect(() => {
+    if (!isSelectorOpen) return;
+
+    const isMobile = window.matchMedia("(max-width: 639px)").matches;
+    if (!isMobile) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isSelectorOpen]);
 
   useEffect(() => {
     if (!isSelectorOpen && !isBenchmarkMenuOpen) return;
@@ -2736,7 +2784,7 @@ export function StrategiesPage(): JSX.Element {
                       aria-expanded={isSelectorOpen}
                       aria-label="Select strategy"
                       onClick={() => setIsSelectorOpen((isOpen) => !isOpen)}
-                      className="group inline-flex max-w-full items-center gap-2 text-left transition disabled:cursor-not-allowed disabled:opacity-70"
+                      className="group inline-flex max-w-full items-center gap-2 text-left transition focus:outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-70"
                     >
                       <span className="truncate text-2xl font-semibold tracking-[-0.04em] text-white transition group-hover:text-cyan-50 sm:text-3xl">
                         {activeStrategy?.name ?? (isLoadingStrategies || isLoadingHeader ? "Loading strategy" : "Strategy profile")}
@@ -2751,6 +2799,7 @@ export function StrategiesPage(): JSX.Element {
                         selectedId={selectedStrategy?.id}
                         onSearchChange={setStrategySearch}
                         onSelect={handleStrategyChange}
+                        onClose={() => setIsSelectorOpen(false)}
                       />
                     ) : null}
                   </div>
@@ -3474,39 +3523,84 @@ function MetricChip({ label, value }: { label: string; value: string }): JSX.Ele
   );
 }
 
+function StrategySelectorMetric({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}): JSX.Element {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-600 sm:hidden">
+        {label}
+      </div>
+      <div
+        className={cn(
+          "whitespace-normal break-words font-medium tabular-nums [overflow-wrap:anywhere]",
+          valueClassName,
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function StrategySelectorGrid({
   search,
   strategies,
   selectedId,
   onSearchChange,
   onSelect,
+  onClose,
 }: {
   search: string;
   strategies: StrategySummary[];
   selectedId?: string;
   onSearchChange: (value: string) => void;
   onSelect: (strategyId: string) => void;
+  onClose: () => void;
 }): JSX.Element {
   return (
-    <div className="pointer-events-auto absolute left-0 top-full z-[100] mt-4 w-[min(820px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl shadow-black/70">
-      <div className="border-b border-white/10 bg-slate-900/90 p-4">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/75">Select strategy</div>
+    <div
+      className={cn(
+        "pointer-events-auto z-[100] min-w-0 max-w-full overflow-x-hidden shadow-2xl shadow-black/70",
+        "fixed inset-0 flex h-[100dvh] w-screen max-w-none flex-col rounded-none border-0 bg-slate-950",
+        "sm:absolute sm:left-0 sm:right-auto sm:top-full sm:bottom-auto sm:mt-4 sm:block sm:h-auto sm:max-h-none sm:w-[min(820px,calc(100vw-2rem))] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-white/10",
+      )}
+    >
+      <div className="shrink-0 border-b border-white/10 bg-slate-900/95 p-4 pt-[max(1rem,env(safe-area-inset-top))]">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/75">
+            Select strategy
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 text-slate-300 sm:hidden"
+            aria-label="Close strategy selector"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
         <input
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search strategies..."
-          className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40"
+          className="mt-3 w-full min-w-0 max-w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40"
         />
       </div>
 
-      <div className="grid grid-cols-[1.5fr_0.55fr_0.55fr_0.75fr_0.65fr] gap-4 bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+      <div className="hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.75fr] sm:gap-4">
         <div>Strategy</div>
         <div>APY</div>
         <div>DD</div>
-        <div>UnitPrice</div>
-        <div>Status</div>
+        <div>Unit Price</div>
       </div>
-      <div className="max-h-[360px] overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] sm:max-h-[360px]">
         {strategies.map((strategy) => {
           const selected = strategy.id === selectedId;
 
@@ -3516,24 +3610,42 @@ function StrategySelectorGrid({
               type="button"
               onClick={() => onSelect(strategy.id)}
               className={cn(
-                "group grid w-full cursor-pointer grid-cols-[1.5fr_0.55fr_0.55fr_0.75fr_0.65fr] items-center gap-4 border-t border-white/10 px-5 py-4 text-left text-sm transition-all duration-200",
-                "hover:-translate-y-[1px] hover:border-cyan-300/30 hover:bg-cyan-300/10 hover:shadow-lg hover:shadow-cyan-950/25",
+                "group flex w-full min-w-0 max-w-full cursor-pointer flex-col gap-3 border-t border-white/10 px-4 py-4 text-left text-sm transition-all duration-200",
+                "sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.75fr] sm:items-center sm:gap-4 sm:px-5",
+                "sm:hover:-translate-y-[1px] sm:hover:border-cyan-300/30 sm:hover:bg-cyan-300/10 sm:hover:shadow-lg sm:hover:shadow-cyan-950/25",
                 selected ? "border-l-2 border-l-cyan-300 bg-cyan-300/15 text-white" : "bg-slate-950 text-slate-300",
               )}
             >
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
-                  <div className="truncate font-semibold text-white transition group-hover:text-cyan-50">{strategy.name}</div>
-                  <ArrowRight className="h-4 w-4 shrink-0 text-cyan-100 opacity-0 transition group-hover:translate-x-1 group-hover:opacity-100" />
+                  <div className="whitespace-normal break-words font-semibold leading-5 text-white transition [overflow-wrap:anywhere] group-hover:text-cyan-50 sm:truncate">
+                    {strategy.name}
+                  </div>
+                  <ArrowRight className="hidden h-4 w-4 shrink-0 text-cyan-100 opacity-0 transition group-hover:translate-x-1 group-hover:opacity-100 sm:block" />
                 </div>
                 {strategy.description ? (
-                  <div className="mt-1 truncate text-xs text-slate-500 transition group-hover:text-slate-300">{strategy.description}</div>
+                  <div className="mt-1 whitespace-normal break-words text-xs leading-5 text-slate-500 transition [overflow-wrap:anywhere] group-hover:text-slate-300 sm:truncate">
+                    {strategy.description}
+                  </div>
                 ) : null}
               </div>
-              <div className="font-medium tabular-nums text-cyan-200 transition group-hover:text-cyan-100">{formatPercentOrNA(strategy.apy)}</div>
-              <div className="font-medium tabular-nums text-amber-200 transition group-hover:text-amber-100">{formatPercentOrNA(strategy.maxDrawdown)}</div>
-              <div className="font-medium tabular-nums text-slate-100 transition group-hover:text-white">{formatNumber(strategy.unitPrice)}</div>
-              <div className="text-xs uppercase tracking-[0.12em] text-slate-400">{strategy.status || "Tracked"}</div>
+              <div className="grid min-w-0 max-w-full grid-cols-3 gap-3 sm:contents">
+                <StrategySelectorMetric
+                  label="APY"
+                  value={formatPercentOrNA(strategy.apy)}
+                  valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
+                />
+                <StrategySelectorMetric
+                  label="DD"
+                  value={formatPercentOrNA(strategy.maxDrawdown)}
+                  valueClassName="text-amber-200 transition group-hover:text-amber-100"
+                />
+                <StrategySelectorMetric
+                  label="Unit Price"
+                  value={formatNumber(strategy.unitPrice)}
+                  valueClassName="text-slate-100 transition group-hover:text-white"
+                />
+              </div>
             </button>
           );
         })}
