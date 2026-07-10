@@ -14,6 +14,7 @@ type StrategySummary = {
   apy1dPct?: number | null;
   apy7dPct?: number | null;
   apy30dPct?: number | null;
+  apyAllPct?: number | null;
   maxDrawdown?: number | null;
   currentDrawdown?: number | null;
   unitPrice?: number | null;
@@ -51,6 +52,7 @@ type StrategyGroupHeader = {
   apy1dPct?: number | null;
   apy7dPct?: number | null;
   apy30dPct?: number | null;
+  apyAllPct?: number | null;
   cagr?: number | null;
   volatility?: number | null;
   volatilityAnnualized?: number | null;
@@ -426,6 +428,7 @@ function normalizeStrategyRecord(item: unknown): StrategySummary | undefined {
   strategy.apy1dPct = firstNumber(metrics.apy1dPct, item.apy1dPct);
   strategy.apy7dPct = firstNumber(metrics.apy7dPct, item.apy7dPct);
   strategy.apy30dPct = firstNumber(metrics.apy30dPct, item.apy30dPct);
+  strategy.apyAllPct = firstNumber(metrics.apyAllPct, item.apyAllPct);
   strategy.maxDrawdown = firstNumber(metrics.maxDrawdownPct, metrics.maxDrawdown, metrics.max_drawdown, item.maxDrawdownPct, item.max_drawdown, item.maxDrawdown);
   strategy.currentDrawdown = firstNumber(metrics.currentDrawdownPct, metrics.currentDrawdown, metrics.current_drawdown, item.currentDrawdownPct, item.current_drawdown, item.currentDrawdown);
   strategy.unitPrice = firstNumber(item.unit_price, item.unitPrice);
@@ -465,6 +468,7 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
     apy1dPct: firstNumber(metrics.apy1dPct, root.apy1dPct, fallback?.apy1dPct),
     apy7dPct: firstNumber(metrics.apy7dPct, root.apy7dPct, fallback?.apy7dPct),
     apy30dPct: firstNumber(metrics.apy30dPct, root.apy30dPct, fallback?.apy30dPct),
+    apyAllPct: firstNumber(metrics.apyAllPct, root.apyAllPct, fallback?.apyAllPct),
     cagr: firstNumber(metrics.cagrPct, metrics.cagr, root.cagrPct, root.cagr),
     volatility: firstNumber(metrics.volatilityAnnualizedPct, metrics.volatilityAnnualized, metrics.volatility, root.volatilityAnnualizedPct, root.volatility),
     volatilityAnnualized: firstNumber(metrics.volatilityAnnualizedPct, metrics.volatilityAnnualized, metrics.volatility_annualized, root.volatilityAnnualizedPct, root.volatilityAnnualized),
@@ -2318,10 +2322,10 @@ export function StrategiesPage(): JSX.Element {
       return [
         "AUM",
         "Net Return",
-        "APY",
         "1D APY",
         "1W APY",
         "1M APY",
+        "All-time APY",
         "Max Drawdown",
         "Drawdown",
         "Volatility",
@@ -2336,13 +2340,14 @@ export function StrategiesPage(): JSX.Element {
     const apy1dPct = headerStrategy?.apy1dPct !== undefined ? headerStrategy.apy1dPct : selectedStrategy?.apy1dPct;
     const apy7dPct = headerStrategy?.apy7dPct !== undefined ? headerStrategy.apy7dPct : selectedStrategy?.apy7dPct;
     const apy30dPct = headerStrategy?.apy30dPct !== undefined ? headerStrategy.apy30dPct : selectedStrategy?.apy30dPct;
+    const apyAllPct = headerStrategy?.apyAllPct !== undefined ? headerStrategy.apyAllPct : selectedStrategy?.apyAllPct;
     const metrics: Metric[] = [
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
       { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
-      { label: "Net APY", value: formatPercentOrNA(headerStrategy?.apy ?? headerStrategy?.cagr ?? selectedStrategy?.apy), hint: "Annualized return" },
       { label: "1D APY", value: formatPercentPointsOrNA(apy1dPct), hint: "Annualized return derived from the trailing 1-day Unit Price change." },
       { label: "1W APY", value: formatPercentPointsOrNA(apy7dPct), hint: "Annualized return derived from the trailing 7-day Unit Price change." },
       { label: "1M APY", value: formatPercentPointsOrNA(apy30dPct), hint: "Annualized return derived from the trailing 30-day Unit Price change." },
+      { label: "All-time APY", value: formatPercentPointsOrNA(apyAllPct), hint: "Annualized return over the complete available track record." },
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
       { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
       { label: "Sharpe ratio", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
@@ -3569,7 +3574,7 @@ function StrategySelectorGrid({
       className={cn(
         "pointer-events-auto z-[100] min-w-0 max-w-full overflow-x-hidden shadow-2xl shadow-black/70",
         "fixed inset-0 flex h-[100dvh] w-screen max-w-none flex-col rounded-none border-0 bg-slate-950",
-        "sm:absolute sm:left-0 sm:right-auto sm:top-full sm:bottom-auto sm:mt-4 sm:block sm:h-auto sm:max-h-none sm:w-[min(820px,calc(100vw-2rem))] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-white/10",
+        "sm:absolute sm:left-0 sm:right-auto sm:top-full sm:bottom-auto sm:mt-4 sm:block sm:h-auto sm:max-h-none sm:w-[min(980px,calc(100vw-2rem))] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-white/10",
       )}
     >
       <div className="shrink-0 border-b border-white/10 bg-slate-900/95 p-4 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -3594,9 +3599,11 @@ function StrategySelectorGrid({
         />
       </div>
 
-      <div className="hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.75fr] sm:gap-4">
+      <div className="hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.65fr_0.55fr_0.75fr] sm:gap-4">
         <div>Strategy</div>
-        <div>APY</div>
+        <div>1W APY</div>
+        <div>1M APY</div>
+        <div>All APY</div>
         <div>DD</div>
         <div>Unit Price</div>
       </div>
@@ -3611,7 +3618,7 @@ function StrategySelectorGrid({
               onClick={() => onSelect(strategy.id)}
               className={cn(
                 "group flex w-full min-w-0 max-w-full cursor-pointer flex-col gap-3 border-t border-white/10 px-4 py-4 text-left text-sm transition-all duration-200",
-                "sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.75fr] sm:items-center sm:gap-4 sm:px-5",
+                "sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.65fr_0.55fr_0.75fr] sm:items-center sm:gap-4 sm:px-5",
                 "sm:hover:-translate-y-[1px] sm:hover:border-cyan-300/30 sm:hover:bg-cyan-300/10 sm:hover:shadow-lg sm:hover:shadow-cyan-950/25",
                 selected ? "border-l-2 border-l-cyan-300 bg-cyan-300/15 text-white" : "bg-slate-950 text-slate-300",
               )}
@@ -3629,10 +3636,20 @@ function StrategySelectorGrid({
                   </div>
                 ) : null}
               </div>
-              <div className="grid min-w-0 max-w-full grid-cols-3 gap-3 sm:contents">
+              <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 sm:contents">
                 <StrategySelectorMetric
-                  label="APY"
-                  value={formatPercentOrNA(strategy.apy)}
+                  label="1W APY"
+                  value={formatPercentPointsOrNA(strategy.apy7dPct)}
+                  valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
+                />
+                <StrategySelectorMetric
+                  label="1M APY"
+                  value={formatPercentPointsOrNA(strategy.apy30dPct)}
+                  valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
+                />
+                <StrategySelectorMetric
+                  label="All-time APY"
+                  value={formatPercentPointsOrNA(strategy.apyAllPct)}
                   valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
                 />
                 <StrategySelectorMetric
