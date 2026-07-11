@@ -2322,7 +2322,6 @@ export function StrategiesPage(): JSX.Element {
       return [
         "AUM",
         "Net Return",
-        "1D APY",
         "1W APY",
         "1M APY",
         "All-time APY",
@@ -2337,14 +2336,12 @@ export function StrategiesPage(): JSX.Element {
 
     const source = headerStrategy ?? selectedStrategy;
     const warningsCount = headerStrategy?.warnings?.length ?? 0;
-    const apy1dPct = headerStrategy?.apy1dPct !== undefined ? headerStrategy.apy1dPct : selectedStrategy?.apy1dPct;
     const apy7dPct = headerStrategy?.apy7dPct !== undefined ? headerStrategy.apy7dPct : selectedStrategy?.apy7dPct;
     const apy30dPct = headerStrategy?.apy30dPct !== undefined ? headerStrategy.apy30dPct : selectedStrategy?.apy30dPct;
     const apyAllPct = headerStrategy?.apyAllPct !== undefined ? headerStrategy.apyAllPct : selectedStrategy?.apyAllPct;
     const metrics: Metric[] = [
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
       { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
-      { label: "1D APY", value: formatPercentPointsOrNA(apy1dPct), hint: "Annualized return derived from the trailing 1-day Unit Price change." },
       { label: "1W APY", value: formatPercentPointsOrNA(apy7dPct), hint: "Annualized return derived from the trailing 7-day Unit Price change." },
       { label: "1M APY", value: formatPercentPointsOrNA(apy30dPct), hint: "Annualized return derived from the trailing 30-day Unit Price change." },
       { label: "All-time APY", value: formatPercentPointsOrNA(apyAllPct), hint: "Annualized return over the complete available track record." },
