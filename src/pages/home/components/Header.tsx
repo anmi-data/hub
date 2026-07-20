@@ -1,7 +1,10 @@
 import anmiLogo from "../assets/anmi_logo_header.webp";
 import { homeNavigation, socialLinks } from "../data/homeNavigation";
+import { localizedPath, useLocale } from "../../../i18n/locale";
 
 export function Header(): JSX.Element {
+  const locale = useLocale();
+
   return (
     <header className="relative z-10 mx-auto flex max-w-7xl items-center justify-between px-5 py-6 lg:px-8">
       <a href="#" className="flex items-center">
@@ -19,7 +22,11 @@ export function Header(): JSX.Element {
       <div className="hidden items-center gap-6 md:flex">
         <nav className="flex items-center gap-7 text-sm text-slate-400">
           {homeNavigation.map((item) => (
-            <a key={item.href} className="transition hover:text-white" href={item.href}>
+            <a
+              key={item.href}
+              className="transition hover:text-white"
+              href={item.href.startsWith("/") ? localizedPath(locale, item.href) : item.href}
+            >
               {item.label}
             </a>
           ))}

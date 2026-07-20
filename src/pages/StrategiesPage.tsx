@@ -201,15 +201,17 @@ type AdvancedMetricsResponse = {
   id: string;
   scopeType: "strategy" | "strategy_group";
   window: AdvancedMetricsWindow;
+  timestamp: string | null;
   observations: number;
   correlations: AdvancedMarketCorrelation[];
   autocorrelations: AdvancedReturnAutocorrelation[];
-  optimalF: number | null;
+  optimalFUncapped: number | null;
   optimalFCapped: number | null;
   kellyApprox: number | null;
   meanDailyReturn: number | null;
   dailyVolatility: number | null;
   maxLoss: number | null;
+  dataQuality: number | null;
   warnings: string[];
 };
 
@@ -471,9 +473,9 @@ function normalizeStrategyRecord(
     id,
     groupId: localizedPresentation.groupId,
     name:
-      localizedPresentation.name ??
       getLocalizedText(item.group_name_json ?? item.displayName ?? item.name ?? item.label, locale) ??
       apiGroupPresentation?.name ??
+      localizedPresentation.name ??
       id,
     change1dPct: nullableNumber(item.change1dPct),
     change7dPct: nullableNumber(item.change7dPct),
@@ -485,9 +487,9 @@ function normalizeStrategyRecord(
     lifetimeDays: nullableNumber(item.lifetimeDays),
   };
   const description =
-    localizedPresentation.description ??
     getLocalizedText(item.group_description_json ?? item.description, locale) ??
-    apiGroupPresentation?.description;
+    apiGroupPresentation?.description ??
+    localizedPresentation.description;
   const status = asString(item.status);
   if (description) strategy.description = description;
   if (status) strategy.status = status;
@@ -1818,8 +1820,16 @@ function formatDateTimeOrNA(value: string | null | undefined): string {
   });
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url);
+function localizedApiUrl(url: string, locale: Locale): string {
+  const localizedUrl = new URL(url, window.location.origin);
+  localizedUrl.searchParams.set("locale", locale);
+  return `${localizedUrl.pathname}${localizedUrl.search}${localizedUrl.hash}`;
+}
+
+async function fetchJson(url: string, locale?: Locale): Promise<unknown> {
+  const response = await fetch(locale ? localizedApiUrl(url, locale) : url, {
+    headers: locale ? { "Accept-Language": locale } : undefined,
+  });
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
   return response.json() as Promise<unknown>;
 }
@@ -1901,15 +1911,17 @@ function normalizeAdvancedMetrics(payload: unknown): AdvancedMetricsResponse | n
     id,
     scopeType,
     window,
+    timestamp: asString(payload.timestamp) ?? null,
     observations: Math.max(0, Math.trunc(asNumber(payload.observations) ?? 0)),
     correlations,
     autocorrelations,
-    optimalF: nullableNumber(payload.optimalFUncapped ?? payload.optimalF),
+    optimalFUncapped: nullableNumber(payload.optimalFUncapped ?? payload.optimalF),
     optimalFCapped: nullableNumber(payload.optimalFCapped),
     kellyApprox: nullableNumber(payload.kellyApprox),
     meanDailyReturn: nullableNumber(payload.meanDailyReturn),
     dailyVolatility: nullableNumber(payload.dailyVolatility),
     maxLoss: nullableNumber(payload.maxLoss),
+    dataQuality: nullableNumber(payload.dataQuality),
     warnings: (Array.isArray(payload.warnings) ? payload.warnings : [])
       .map(asString)
       .filter((warning): warning is string => Boolean(warning)),
@@ -2427,11 +2439,16 @@ export function StrategiesPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    setPrimaryChartCache({});
+    setBenchmarkCache({});
+  }, [locale]);
+
+  useEffect(() => {
     let active = true;
     setIsLoadingStrategies(true);
     Promise.all([
-      fetchJson("/api/v1/strategies"),
-      fetchJson("/api/v1/strategy-groups"),
+      fetchJson("/api/v1/strategies", locale),
+      fetchJson("/api/v1/strategy-groups", locale),
     ])
       .then(([strategiesPayload, groupsPayload]) => {
         if (!active) return;
@@ -2455,7 +2472,7 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     let active = true;
     setIsLoadingBenchmarks(true);
-    fetchJson("/api/v1/benchmarks")
+    fetchJson("/api/v1/benchmarks", locale)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeBenchmarkOptions(payload);
@@ -2474,7 +2491,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, []);
+  }, [locale]);
 
   const selectedStrategy = useMemo(() => {
     if (strategies.length === 0) return undefined;
@@ -2595,9 +2612,9 @@ export function StrategiesPage(): JSX.Element {
 
   useEffect(() => {
     if (!isLoadingStrategies && !strategyId && selectedStrategy) {
-      navigate(`/strategies/${selectedStrategy.id}`, { replace: true });
+      navigate(localizedPath(locale, `/strategies/${encodeURIComponent(selectedStrategy.id)}`), { replace: true });
     }
-  }, [isLoadingStrategies, navigate, selectedStrategy, strategyId]);
+  }, [isLoadingStrategies, locale, navigate, selectedStrategy, strategyId]);
 
   useEffect(() => {
     if (!isSelectorOpen) return;
@@ -2658,7 +2675,7 @@ export function StrategiesPage(): JSX.Element {
     setIsLoadingHeader(true);
     setHeaderError(null);
     setHeaderStrategy(null);
-    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/header`)
+    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/header`, locale)
       .then((payload) => {
         if (!active) return;
         setHeaderStrategy(normalizeGroupHeader(payload, locale, selectedStrategy));
@@ -2688,6 +2705,7 @@ export function StrategiesPage(): JSX.Element {
     setAdvancedMetricsError(null);
     fetchJson(
       `/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/advanced-metrics?window=${advancedMetricsWindow}`,
+      locale,
     )
       .then((payload) => {
         if (!active) return;
@@ -2709,7 +2727,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [advancedMetricsWindow, selectedStrategy]);
+  }, [advancedMetricsWindow, locale, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -2731,7 +2749,7 @@ export function StrategiesPage(): JSX.Element {
       metric,
       normalize: "false",
     });
-    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/chart?${params.toString()}`)
+    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/chart?${params.toString()}`, locale)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeChartResponse(payload, chartMode);
@@ -2753,7 +2771,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [chartMode, primaryChartCache, selectedStrategy]);
+  }, [chartMode, locale, primaryChartCache, selectedStrategy]);
 
   useEffect(() => {
     if (chartMode !== "unit_price" || !selectedBenchmark || benchmarkCache[selectedBenchmark]) {
@@ -2763,7 +2781,7 @@ export function StrategiesPage(): JSX.Element {
 
     let active = true;
     setIsLoadingBenchmarkHistory(true);
-    fetchJson(`/api/v1/benchmarks/${encodeURIComponent(selectedBenchmark)}/history?normalize=true`)
+    fetchJson(`/api/v1/benchmarks/${encodeURIComponent(selectedBenchmark)}/history?normalize=true`, locale)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeBenchmarkHistory(payload, selectedBenchmark);
@@ -2781,7 +2799,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [benchmarkCache, chartMode, selectedBenchmark]);
+  }, [benchmarkCache, chartMode, locale, selectedBenchmark]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -2797,7 +2815,7 @@ export function StrategiesPage(): JSX.Element {
     setHistoryPage(1);
     setHistorySearchInput("");
     setHistorySearch("");
-    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/tree`)
+    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/tree`, locale)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeTree(payload, locale);
@@ -2838,7 +2856,7 @@ export function StrategiesPage(): JSX.Element {
     if (import.meta.env.DEV) {
       console.debug("Explorer details request", { node: selectedTreeNode, url: detailsUrl });
     }
-    fetchJson(detailsUrl)
+    fetchJson(detailsUrl, locale)
       .then((payload) => {
         if (!active) return;
         if (import.meta.env.DEV) {
@@ -2880,7 +2898,7 @@ export function StrategiesPage(): JSX.Element {
     if (import.meta.env.DEV) {
       console.debug("Explorer history request", { node: selectedTreeNode, dataset: selectedDataset, url: historyUrl });
     }
-    fetchJson(historyUrl)
+    fetchJson(historyUrl, locale)
       .then((payload) => {
         if (!active) return;
         if (import.meta.env.DEV) {
@@ -2901,7 +2919,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [historyPage, historyPageSize, historySearch, selectedDataset, selectedStrategy, selectedTreeNode]);
+  }, [historyPage, historyPageSize, historySearch, locale, selectedDataset, selectedStrategy, selectedTreeNode]);
 
   const analytics = useMemo(() => {
     const metric = chartMode === "nav_usd" ? "nav_usd" : "unit_price";
@@ -2927,7 +2945,7 @@ export function StrategiesPage(): JSX.Element {
   function handleStrategyChange(nextId: string): void {
     setIsSelectorOpen(false);
     setStrategySearch("");
-    navigate(`/strategies/${encodeURIComponent(nextId)}`);
+    navigate(localizedPath(locale, `/strategies/${encodeURIComponent(nextId)}`));
   }
 
   function handleChartModeChange(value: string): void {
@@ -2979,7 +2997,7 @@ export function StrategiesPage(): JSX.Element {
           <div className="flex items-start gap-5">
             <div className="flex min-w-0 flex-1 flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 flex-1 items-start gap-6">
-                <Link to="/" className="shrink-0 pt-5" aria-label="ANMI home">
+                <Link to={localizedPath(locale)} className="shrink-0 pt-5" aria-label="ANMI home">
                   <img
                     src={anmiLogo}
                     alt="ANMI"
@@ -3066,7 +3084,7 @@ export function StrategiesPage(): JSX.Element {
           <StateCard
             title="Strategy not found"
             message="The requested strategy is not available in the current ANMI strategy list."
-            action={firstStrategy ? { label: `Open ${firstStrategy.name}`, onClick: () => navigate(`/strategies/${firstStrategy.id}`, { replace: true }) } : undefined}
+            action={firstStrategy ? { label: `Open ${firstStrategy.name}`, onClick: () => navigate(localizedPath(locale, `/strategies/${encodeURIComponent(firstStrategy.id)}`), { replace: true }) } : undefined}
           />
         ) : null}
 
@@ -3248,6 +3266,7 @@ export function StrategiesPage(): JSX.Element {
                       <tr>
                         <th className="px-3 py-2 text-left font-semibold">Lag</th>
                         <th className="px-3 py-2 text-right font-semibold">Autocorrelation</th>
+                        <th className="px-3 py-2 text-right font-semibold">Observations</th>
                         <th className="px-3 py-2 text-right font-semibold">Interpretation</th>
                       </tr>
                     </thead>
@@ -3258,6 +3277,7 @@ export function StrategiesPage(): JSX.Element {
                           <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-200">
                             {formatCorrelation(metric.autocorrelation)}
                           </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-slate-500">{metric.observations}</td>
                           <td className="px-3 py-2 text-right text-xs text-slate-500">
                             {autocorrelationInterpretation(metric.autocorrelation)}
                           </td>
@@ -3272,7 +3292,7 @@ export function StrategiesPage(): JSX.Element {
                   <div className="mt-4 grid grid-cols-2 gap-3">
                     <div>
                       <div className="text-[10px] uppercase tracking-[0.12em] text-slate-600">Optimal-F</div>
-                      <div className="mt-1 text-xl font-semibold tabular-nums text-white">{formatAdvancedNumber(advancedMetrics.optimalF)}</div>
+                      <div className="mt-1 text-xl font-semibold tabular-nums text-white">{formatAdvancedNumber(advancedMetrics.optimalFUncapped)}</div>
                     </div>
                     <div>
                       <div className="text-[10px] uppercase tracking-[0.12em] text-slate-600">Capped</div>
@@ -3295,6 +3315,13 @@ export function StrategiesPage(): JSX.Element {
                 </div>
               </div>
 
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <AdvancedMetricCard label="Mean daily return" value={formatRatioPercent(advancedMetrics.meanDailyReturn, 3)} />
+                <AdvancedMetricCard label="Daily volatility" value={formatRatioPercent(advancedMetrics.dailyVolatility, 3)} />
+                <AdvancedMetricCard label="Maximum daily loss" value={formatRatioPercent(advancedMetrics.maxLoss, 3)} tone="risk" />
+                <AdvancedMetricCard label="Data quality" value={formatRatioPercent(advancedMetrics.dataQuality, 1)} />
+              </div>
+
               {advancedMetrics.warnings.length > 0 ? (
                 <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-xs leading-5 text-amber-100">
                   {advancedMetrics.warnings.map((warning) => <div key={warning}>{warning}</div>)}
@@ -3302,6 +3329,7 @@ export function StrategiesPage(): JSX.Element {
               ) : null}
               <p className="mt-3 text-xs leading-5 text-slate-500">
                 Optimal-F is estimated from historical daily returns and is not a guaranteed safe allocation.
+                {advancedMetrics.timestamp ? ` Calculated ${formatDateTime(advancedMetrics.timestamp)}.` : ""}
               </p>
             </>
           ) : null}
@@ -3345,6 +3373,25 @@ function StatusPill({ active, label }: { active: boolean; label: string }): JSX.
     <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.045] px-3 py-1.5 text-xs text-slate-300">
       {active ? <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" /> : <TrendingUp className="h-3.5 w-3.5 text-emerald-300" />}
       {label}
+    </div>
+  );
+}
+
+function AdvancedMetricCard({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "risk";
+}): JSX.Element {
+  return (
+    <div className="rounded-xl border border-white/10 bg-slate-950/20 px-4 py-3">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</div>
+      <div className={cn("mt-1.5 text-lg font-semibold tabular-nums", tone === "risk" ? "text-amber-200" : "text-slate-100")}>
+        {value}
+      </div>
     </div>
   );
 }

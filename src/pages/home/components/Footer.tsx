@@ -1,7 +1,10 @@
 import anmiLogo from "../assets/anmi_logo_header.webp";
 import { footerColumns } from "../data/footerData";
+import { localizedPath, useLocale } from "../../../i18n/locale";
 
 export function Footer(): JSX.Element {
+  const locale = useLocale();
+
   return (
     <footer className="relative z-10 border-t border-white/10 bg-slate-950/45">
       <div className="mx-auto grid max-w-7xl gap-10 px-5 py-12 lg:grid-cols-[0.85fr_1.55fr] lg:px-8 lg:py-16">
@@ -34,7 +37,7 @@ export function Footer(): JSX.Element {
                 {column.links.map((link) => (
                   <a
                     key={`${column.title}-${link.label}`}
-                    href={link.href}
+                    href={link.href.startsWith("/") ? localizedPath(locale, link.href) : link.href}
                     className="text-sm text-slate-400 transition hover:text-white"
                   >
                     {link.label}

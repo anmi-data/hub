@@ -3,8 +3,11 @@ import { notificationEvents } from "../data/notifications";
 import { SectionLabel } from "../ui/SectionLabel";
 import { InteractiveCard } from "../ui/InteractiveCard";
 import { cn } from "../utils/cn";
+import { localizedPath, useLocale } from "../../../i18n/locale";
 
 export function AlertSection(): JSX.Element {
+  const locale = useLocale();
+
   return (
     <section id="media" className="relative z-10 mx-auto max-w-7xl px-5 pb-24 lg:px-8">
       <div className="overflow-hidden rounded-[2.25rem] border border-white/10 bg-white/[0.04] shadow-2xl shadow-slate-950/25 backdrop-blur">
@@ -20,7 +23,7 @@ export function AlertSection(): JSX.Element {
 
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <a
-                href="/notifications"
+                href={localizedPath(locale, "/notifications")}
                 className="inline-flex items-center justify-center rounded-full bg-cyan-200 px-6 py-3 text-sm font-semibold text-slate-950 shadow-xl shadow-cyan-950/25 transition hover:bg-white"
               >
                   View all alerts

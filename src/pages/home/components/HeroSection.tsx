@@ -1,8 +1,11 @@
 import { motion } from "framer-motion";
 import { ArrowRight, ShieldCheck } from "lucide-react";
+import { localizedPath, useLocale } from "../../../i18n/locale";
 import { Pill } from "../ui/Pill";
 
 export function HeroSection(): JSX.Element {
+  const locale = useLocale();
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 18 }}
@@ -21,7 +24,7 @@ export function HeroSection(): JSX.Element {
       </p>
       <div className="mt-9 flex flex-col gap-3 sm:flex-row">
         <a
-          href="/strategies"
+          href={localizedPath(locale, "/strategies")}
           className="inline-flex items-center justify-center rounded-full bg-cyan-200 px-6 py-3 text-sm font-semibold text-slate-950 shadow-xl shadow-cyan-950/25 transition hover:bg-white"
         >
           Explore Strategies

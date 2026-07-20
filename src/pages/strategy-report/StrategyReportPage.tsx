@@ -6,6 +6,7 @@ import { ReportChart } from "./ReportCharts";
 import type { Confidence, Metric, ReportSection, StrategyReport } from "./types";
 import { useParams } from "react-router-dom";
 import { strategyReports } from "./data";
+import { localizedPath, useLocale } from "../../i18n/locale";
 
 const confidenceStyle: Record<Confidence, string> = {
   High: "border-emerald-300/20 bg-emerald-300/10 text-emerald-200",
@@ -18,6 +19,7 @@ function ConfidenceBadge({ value }: { value: Confidence }): JSX.Element {
 }
 
 function ReportHeader({ report }: { report: StrategyReport }): JSX.Element {
+  const locale = useLocale();
   const details = [
     ["Strategy type", report.type], ["Market", report.market], ["Track record", report.trackRecord],
     ["Granularity", report.granularity], ["Last update", report.lastUpdate],
@@ -26,7 +28,7 @@ function ReportHeader({ report }: { report: StrategyReport }): JSX.Element {
     <header className="border-b border-white/10 bg-[#07111f]/95 backdrop-blur-xl">
       <div className="mx-auto max-w-[1500px] px-4 py-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between gap-5">
-          <a href="/" className="flex items-center gap-3 text-sm text-slate-400 transition hover:text-white">
+          <a href={localizedPath(locale)} className="flex items-center gap-3 text-sm text-slate-400 transition hover:text-white">
             <ArrowLeft className="h-4 w-4" />
             <img src={anmiLogo} alt="ANMI" className="h-8 w-auto" />
           </a>
@@ -102,6 +104,7 @@ function Insight({ icon, label, text }: { icon: JSX.Element; label: string; text
 }
 
 export function StrategyReportPage(): JSX.Element {
+  const locale = useLocale();
   const { strategySlug } = useParams<{ strategySlug: string }>();
   const report = strategySlug ? strategyReports[strategySlug] : undefined;
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -111,7 +114,7 @@ export function StrategyReportPage(): JSX.Element {
       <main className="grid min-h-screen place-items-center bg-[#050b14] px-4 text-slate-100">
         <div className="text-center">
           <h1 className="text-3xl font-semibold tracking-[-0.025em] text-white">Report not found</h1>
-          <a href="/" className="mt-5 inline-flex items-center gap-2 text-sm text-slate-400 transition hover:text-white">
+          <a href={localizedPath(locale)} className="mt-5 inline-flex items-center gap-2 text-sm text-slate-400 transition hover:text-white">
             <ArrowLeft className="h-4 w-4" />
             Back to home
           </a>
