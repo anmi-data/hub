@@ -2,19 +2,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle, ChevronDown, Circle, LineChart, Loader2, ShieldCheck, TrendingUp, X, XCircle } from "lucide-react";
 import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/StrategyTimeSeriesChart";
+import { getLocalizedCategory, getLocalizedText, getStrategyPresentation, localizedPath, type Locale, useLocale } from "../i18n/locale";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
 
 type StrategySummary = {
   id: string;
+  groupId: string;
   name: string;
   description?: string;
   status?: string;
   apy?: number | null;
-  apy1dPct?: number | null;
-  apy7dPct?: number | null;
-  apy30dPct?: number | null;
-  apyAllPct?: number | null;
+  change1dPct: number | null;
+  change7dPct: number | null;
+  change1yPct: number | null;
+  changeYtdPct: number | null;
+  apy30dPct: number | null;
+  apyAllPct: number | null;
+  dailyVar95Pct: number | null;
+  lifetimeDays: number | null;
   maxDrawdown?: number | null;
   currentDrawdown?: number | null;
   unitPrice?: number | null;
@@ -49,10 +55,13 @@ type StrategyGroupHeader = {
   navUsd?: number | null;
   totalReturn?: number | null;
   apy?: number | null;
-  apy1dPct?: number | null;
-  apy7dPct?: number | null;
-  apy30dPct?: number | null;
-  apyAllPct?: number | null;
+  change1dPct: number | null;
+  change7dPct: number | null;
+  change1yPct: number | null;
+  changeYtdPct: number | null;
+  apy30dPct: number | null;
+  apyAllPct: number | null;
+  dailyVar95Pct: number | null;
   cagr?: number | null;
   volatility?: number | null;
   volatilityAnnualized?: number | null;
@@ -174,6 +183,36 @@ type BenchmarkOption = {
   status?: string | null;
 };
 
+type AdvancedMetricsWindow = "30d" | "90d" | "all";
+
+type AdvancedMarketCorrelation = {
+  symbol: string;
+  correlation: number | null;
+  observations: number;
+};
+
+type AdvancedReturnAutocorrelation = {
+  lagDays: number;
+  autocorrelation: number | null;
+  observations: number;
+};
+
+type AdvancedMetricsResponse = {
+  id: string;
+  scopeType: "strategy" | "strategy_group";
+  window: AdvancedMetricsWindow;
+  observations: number;
+  correlations: AdvancedMarketCorrelation[];
+  autocorrelations: AdvancedReturnAutocorrelation[];
+  optimalF: number | null;
+  optimalFCapped: number | null;
+  kellyApprox: number | null;
+  meanDailyReturn: number | null;
+  dailyVolatility: number | null;
+  maxLoss: number | null;
+  warnings: string[];
+};
+
 type ApiChartSeriesPoint = {
   timestamp: string;
   rawValue?: number | null;
@@ -227,6 +266,7 @@ type Metric = {
   label: string;
   value: string;
   hint?: string;
+  valueClassName?: string;
 };
 
 type ExposureMixKind =
@@ -247,6 +287,7 @@ type ExposureMixItem = {
 
 const DEFAULT_CHART_MODE: ChartMode = "unit_price";
 const DEFAULT_BENCHMARK = "BTC";
+const DEFAULT_ADVANCED_METRICS_WINDOW: AdvancedMetricsWindow = "90d";
 const CHART_MODE_STORAGE_KEY = "anmi-hub:chart-mode:v1";
 const SELECTED_BENCHMARK_STORAGE_KEY = "anmi-hub:selected-benchmark:v1";
 const HISTORY_PAGE_SIZES = [10, 30, 50, 100] as const;
@@ -396,39 +437,61 @@ function getChartPointValue(
   return rawValue ?? normalizedValue ?? null;
 }
 
-function parseJsonText(value: unknown): string | undefined {
-  const raw = asString(value);
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed === "string") return parsed.trim() || undefined;
-    if (isRecord(parsed)) {
-      return asString(parsed.en) ?? asString(parsed.default) ?? asString(Object.values(parsed).find((item) => typeof item === "string"));
-    }
-  } catch {
-    return raw;
-  }
-  return undefined;
+type StrategyGroupPresentation = {
+  name?: string;
+  description?: string;
+};
+
+function normalizeStrategyGroupPresentations(payload: unknown, locale: Locale): Map<string, StrategyGroupPresentation> {
+  const presentations = new Map<string, StrategyGroupPresentation>();
+  asArray(payload).forEach((item) => {
+    if (!isRecord(item)) return;
+    const id = asString(item.id) ?? asString(item.groupId) ?? asString(item.group_id);
+    if (!id) return;
+    presentations.set(id, {
+      name: getLocalizedText(item.name ?? item.group_name_json, locale),
+      description: getLocalizedText(item.description ?? item.group_description_json, locale),
+    });
+  });
+  return presentations;
 }
 
-function normalizeStrategyRecord(item: unknown): StrategySummary | undefined {
+function normalizeStrategyRecord(
+  item: unknown,
+  locale: Locale,
+  groupPresentations: Map<string, StrategyGroupPresentation>,
+): StrategySummary | undefined {
   if (!isRecord(item)) return undefined;
   const metrics = isRecord(item.metrics) ? item.metrics : {};
   const id = asString(item.group_id) ?? asString(item.groupId) ?? asString(item.id);
   if (!id) return undefined;
+  const localizedPresentation = getStrategyPresentation(id, locale);
+  const apiGroupPresentation = groupPresentations.get(localizedPresentation.groupId);
   const strategy: StrategySummary = {
     id,
-    name: parseJsonText(item.group_name_json) ?? asString(item.displayName) ?? asString(item.name) ?? asString(item.label) ?? id,
+    groupId: localizedPresentation.groupId,
+    name:
+      localizedPresentation.name ??
+      getLocalizedText(item.group_name_json ?? item.displayName ?? item.name ?? item.label, locale) ??
+      apiGroupPresentation?.name ??
+      id,
+    change1dPct: nullableNumber(item.change1dPct),
+    change7dPct: nullableNumber(item.change7dPct),
+    change1yPct: nullableNumber(item.change1yPct),
+    changeYtdPct: nullableNumber(item.changeYtdPct),
+    apy30dPct: nullableNumber(item.apy30dPct),
+    apyAllPct: nullableNumber(item.apyAllPct),
+    dailyVar95Pct: nullableNumber(item.dailyVar95Pct),
+    lifetimeDays: nullableNumber(item.lifetimeDays),
   };
-  const description = parseJsonText(item.group_description_json) ?? asString(item.description);
+  const description =
+    localizedPresentation.description ??
+    getLocalizedText(item.group_description_json ?? item.description, locale) ??
+    apiGroupPresentation?.description;
   const status = asString(item.status);
   if (description) strategy.description = description;
   if (status) strategy.status = status;
   strategy.apy = firstNumber(metrics.apyPct, metrics.apy, metrics.cagrPct, metrics.cagr, item.apyPct, item.cagrPct, item.cagr, item.apy, item.total_return, item.totalReturn);
-  strategy.apy1dPct = firstNumber(metrics.apy1dPct, item.apy1dPct);
-  strategy.apy7dPct = firstNumber(metrics.apy7dPct, item.apy7dPct);
-  strategy.apy30dPct = firstNumber(metrics.apy30dPct, item.apy30dPct);
-  strategy.apyAllPct = firstNumber(metrics.apyAllPct, item.apyAllPct);
   strategy.maxDrawdown = firstNumber(metrics.maxDrawdownPct, metrics.maxDrawdown, metrics.max_drawdown, item.maxDrawdownPct, item.max_drawdown, item.maxDrawdown);
   strategy.currentDrawdown = firstNumber(metrics.currentDrawdownPct, metrics.currentDrawdown, metrics.current_drawdown, item.currentDrawdownPct, item.current_drawdown, item.currentDrawdown);
   strategy.unitPrice = firstNumber(item.unit_price, item.unitPrice);
@@ -437,13 +500,14 @@ function normalizeStrategyRecord(item: unknown): StrategySummary | undefined {
   return strategy;
 }
 
-function normalizeStrategies(payload: unknown): StrategySummary[] {
-  return asArray(payload)
-    .map(normalizeStrategyRecord)
+function normalizeStrategies(strategiesPayload: unknown, groupsPayload: unknown, locale: Locale): StrategySummary[] {
+  const groupPresentations = normalizeStrategyGroupPresentations(groupsPayload, locale);
+  return asArray(strategiesPayload)
+    .map((item) => normalizeStrategyRecord(item, locale, groupPresentations))
     .filter((item): item is StrategySummary => Boolean(item));
 }
 
-function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): StrategyGroupHeader {
+function normalizeGroupHeader(raw: unknown, locale: Locale, fallback?: StrategySummary): StrategyGroupHeader {
   const root = isRecord(raw) ? raw : {};
   const group = isRecord(root.group) ? root.group : {};
   const summary = isRecord(root.summary) ? root.summary : isRecord(group.summary) ? group.summary : {};
@@ -451,7 +515,7 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
   const dataQuality = isRecord(root.dataQuality) ? root.dataQuality : isRecord(root.data_quality) ? root.data_quality : {};
   const liveTrackRecord = isRecord(root.liveTrackRecord) ? root.liveTrackRecord : isRecord(root.live_track_record) ? root.live_track_record : {};
   const id = asString(group.id) ?? asString(root.id) ?? fallback?.id ?? "";
-  const name = asString(group.name) ?? asString(root.name) ?? fallback?.name ?? id;
+  const name = fallback?.name ?? getLocalizedText(group.name, locale) ?? getLocalizedText(root.name, locale) ?? id;
   const warnings = [
     ...(Array.isArray(root.warnings) ? root.warnings : []),
     ...(Array.isArray(dataQuality.warnings) ? dataQuality.warnings : []),
@@ -459,16 +523,19 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
   const normalized: StrategyGroupHeader = {
     id,
     name,
-    description: parseJsonText(group.description) ?? parseJsonText(root.description) ?? fallback?.description ?? null,
+    description: fallback?.description ?? getLocalizedText(group.description, locale) ?? getLocalizedText(root.description, locale) ?? null,
     status: asString(group.status) ?? asString(root.status) ?? asString(liveTrackRecord.status) ?? fallback?.status ?? null,
     unitPrice: firstNumber(summary.unitPrice, summary.unit_price, group.unitPrice, group.unit_price, root.unitPrice, root.unit_price, fallback?.unitPrice),
     navUsd: firstNumber(summary.navUsd, summary.nav_usd, group.navUsd, group.nav_usd, root.navUsd, root.nav_usd, fallback?.navUsd),
     totalReturn: firstNumber(metrics.totalReturnPct, metrics.totalReturn, metrics.total_return, root.totalReturnPct, root.totalReturn, root.total_return),
     apy: firstNumber(metrics.apyPct, metrics.apy, root.apyPct, root.apy, fallback?.apy),
-    apy1dPct: firstNumber(metrics.apy1dPct, root.apy1dPct, fallback?.apy1dPct),
-    apy7dPct: firstNumber(metrics.apy7dPct, root.apy7dPct, fallback?.apy7dPct),
-    apy30dPct: firstNumber(metrics.apy30dPct, root.apy30dPct, fallback?.apy30dPct),
-    apyAllPct: firstNumber(metrics.apyAllPct, root.apyAllPct, fallback?.apyAllPct),
+    change1dPct: nullableNumber(metrics.change1dPct),
+    change7dPct: nullableNumber(metrics.change7dPct),
+    change1yPct: nullableNumber(metrics.change1yPct),
+    changeYtdPct: nullableNumber(metrics.changeYtdPct),
+    apy30dPct: nullableNumber(metrics.apy30dPct),
+    apyAllPct: nullableNumber(metrics.apyAllPct),
+    dailyVar95Pct: nullableNumber(metrics.dailyVar95Pct),
     cagr: firstNumber(metrics.cagrPct, metrics.cagr, root.cagrPct, root.cagr),
     volatility: firstNumber(metrics.volatilityAnnualizedPct, metrics.volatilityAnnualized, metrics.volatility, root.volatilityAnnualizedPct, root.volatility),
     volatilityAnnualized: firstNumber(metrics.volatilityAnnualizedPct, metrics.volatilityAnnualized, metrics.volatility_annualized, root.volatilityAnnualizedPct, root.volatilityAnnualized),
@@ -492,11 +559,11 @@ function normalizeGroupHeader(raw: unknown, fallback?: StrategySummary): Strateg
   return normalized;
 }
 
-function normalizeTreeNode(item: unknown, parentPath: string, index = 0): ExplorerTreeNode | undefined {
+function normalizeTreeNode(item: unknown, parentPath: string, locale: Locale, index = 0): ExplorerTreeNode | undefined {
   if (!isRecord(item)) return undefined;
   const id = asString(item.id) ?? asString(item.nodeId) ?? asString(item.key) ?? `node-${index}`;
   const type = asString(item.type) ?? asString(item.nodeType) ?? "node";
-  const label = asString(item.label) ?? asString(item.name) ?? id;
+  const label = getLocalizedText(item.label ?? item.name, locale) ?? id;
   const pathPart = `${type}:${id}:${label}:${index}`;
   const uiKey = parentPath ? `${parentPath}/${pathPart}` : pathPart;
   const meta = isRecord(item.meta) ? item.meta : {};
@@ -506,10 +573,10 @@ function normalizeTreeNode(item: unknown, parentPath: string, index = 0): Explor
   const accountId = asString(item.accountId) ?? asString(item.account_id) ?? asString(meta.accountId) ?? asString(meta.account_id);
   const protocolType = asString(item.protocolType) ?? asString(item.protocol_type) ?? asString(item.protocol) ?? asString(meta.protocolType) ?? asString(meta.protocol_type) ?? asString(meta.protocol);
   const defaultDataset = asString(item.defaultDataset) ?? asString(item.default_dataset);
-  const header = normalizeRawHeaderFields(item.header);
+  const header = normalizeRawHeaderFields(item.header, locale);
   const summary = isRecord(item.summary) ? item.summary : undefined;
   const children = asArray(item.children)
-    .map((child, childIndex) => normalizeTreeNode(child, uiKey, childIndex))
+    .map((child, childIndex) => normalizeTreeNode(child, uiKey, locale, childIndex))
     .filter((node): node is ExplorerTreeNode => Boolean(node));
   const node: ExplorerTreeNode = {
     id,
@@ -519,8 +586,8 @@ function normalizeTreeNode(item: unknown, parentPath: string, index = 0): Explor
     uiKey,
     header,
     summary,
-    headerFields: normalizeHeaderFields(item.header),
-    summaryCards: normalizeSummaryCards(summary, type, protocolType?.toLowerCase()),
+    headerFields: normalizeHeaderFields(item.header, locale),
+    summaryCards: normalizeSummaryCards(summary, locale, type, protocolType?.toLowerCase()),
   };
   const count = firstNumber(item.count, item.rows, item.total);
   const status = asString(item.status);
@@ -543,16 +610,16 @@ function normalizeTreeNode(item: unknown, parentPath: string, index = 0): Explor
   return node;
 }
 
-function normalizeTree(payload: unknown): ExplorerTreeNode[] {
+function normalizeTree(payload: unknown, locale: Locale): ExplorerTreeNode[] {
   if (isRecord(payload) && isRecord(payload.root)) {
-    const root = normalizeTreeNode(payload.root, "", 0);
+    const root = normalizeTreeNode(payload.root, "", locale, 0);
     return root ? [root] : [];
   }
   const nodes = asArray(payload);
   if (nodes.length > 0) {
-    return nodes.map((item, index) => normalizeTreeNode(item, "", index)).filter((node): node is ExplorerTreeNode => Boolean(node));
+    return nodes.map((item, index) => normalizeTreeNode(item, "", locale, index)).filter((node): node is ExplorerTreeNode => Boolean(node));
   }
-  const single = normalizeTreeNode(payload, "", 0);
+  const single = normalizeTreeNode(payload, "", locale, 0);
   return single ? [single] : [];
 }
 
@@ -762,17 +829,17 @@ function orderSummaryEntries(entries: Array<[string, unknown]>, nodeType?: strin
   return [...prioritized, ...rest];
 }
 
-function normalizeSummaryCards(value: unknown, nodeType?: string, protocolType?: string): ExplorerDetails["summaryCards"] {
+function normalizeSummaryCards(value: unknown, locale: Locale, nodeType?: string, protocolType?: string): ExplorerDetails["summaryCards"] {
   if (Array.isArray(value)) {
     return value
       .map((item): ExplorerDetails["summaryCards"][number] | undefined => {
         if (!isRecord(item)) return undefined;
-        const label = asString(item.label) ?? asString(item.name) ?? asString(item.key);
+        const label = getLocalizedText(item.label ?? item.name ?? item.key, locale);
         if (!label) return undefined;
         const rawValue = item.value ?? item.count ?? item.amount;
         return {
           label: formatMetricLabel(label),
-          value: formatFieldValue(label, rawValue),
+          value: formatFieldValue(label, rawValue, locale),
           tone: asString(item.tone) as ExplorerDetails["summaryCards"][number]["tone"],
         };
       })
@@ -781,47 +848,50 @@ function normalizeSummaryCards(value: unknown, nodeType?: string, protocolType?:
 
   if (isRecord(value)) {
     return orderSummaryEntries(Object.entries(value), nodeType, protocolType)
-      .map(([key, item]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, item) }));
+      .map(([key, item]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, item, locale) }));
   }
 
   return [];
 }
 
-function formatExplorerHeaderValue(field: string, value: unknown, format?: string | null, unit?: string | null): string {
-  if (value === null || value === undefined) return formatEmptyValue();
+function formatExplorerHeaderValue(field: string, value: unknown, locale: Locale, format?: string | null, unit?: string | null): string {
+  if (value === null || value === undefined) return isStrategyContractMetricField(field) ? "—" : formatEmptyValue();
+  if (isLifetimeDaysField(field)) return formatLifetimeDays(asNumber(value));
   const normalizedFormat = format?.trim().toLowerCase();
   if (normalizedFormat === "usd" || normalizedFormat === "currency") return formatUsdOrNA(asNumber(value));
   if (normalizedFormat === "percent" || normalizedFormat === "percentage") {
     const numericValue = asNumber(value);
-    return numericValue === undefined ? formatValue(value) : formatPercent(numericValue);
+    if (numericValue === undefined) return formatValue(value);
+    if (isDailyVar95Field(field)) return formatRiskPercentPointsOrDash(numericValue);
+    return isPercentagePointsField(field) ? formatPercentPointsOrDash(numericValue) : formatPercent(numericValue);
   }
   if (normalizedFormat === "datetime") return formatDateTime(value);
   if (normalizedFormat === "address") return formatAddress(value);
   if (normalizedFormat === "tags") return formatTags(value);
   if (normalizedFormat === "boolean") return typeof value === "boolean" ? (value ? "Yes" : "No") : formatValue(value);
   if (normalizedFormat === "number") return formatNumberOrNA(asNumber(value));
-  const formatted = formatFieldValue(field, value);
+  const formatted = formatFieldValue(field, value, locale);
   return unit && formatted !== "N/A" ? `${formatted} ${unit}` : formatted;
 }
 
-function normalizeHeaderFields(value: unknown): ExplorerDetails["headerFields"] {
+function normalizeHeaderFields(value: unknown, locale: Locale): ExplorerDetails["headerFields"] {
   if (!Array.isArray(value)) return [];
   return value
     .map((item): ExplorerDetails["headerFields"][number] | undefined => {
       if (!isRecord(item)) return undefined;
       const key = asString(item.key) ?? asString(item.id) ?? asString(item.name);
       if (!key) return undefined;
-      const label = asString(item.label) ?? formatMetricLabel(key);
+      const label = getLocalizedText(item.label, locale) ?? formatMetricLabel(key);
       return {
         key,
         label: formatMetricLabel(label),
-        value: formatExplorerHeaderValue(key, item.value, asString(item.format) ?? null, asString(item.unit) ?? null),
+        value: formatExplorerHeaderValue(key, item.value, locale, asString(item.format) ?? null, asString(item.unit) ?? null),
       };
     })
     .filter((item): item is ExplorerDetails["headerFields"][number] => Boolean(item));
 }
 
-function normalizeRawHeaderFields(value: unknown): ExplorerHeaderField[] | undefined {
+function normalizeRawHeaderFields(value: unknown, locale: Locale): ExplorerHeaderField[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const fields = value
     .map((item): ExplorerHeaderField | undefined => {
@@ -830,7 +900,7 @@ function normalizeRawHeaderFields(value: unknown): ExplorerHeaderField[] | undef
       if (!key) return undefined;
       return {
         key,
-        label: asString(item.label) ?? formatMetricLabel(key),
+        label: getLocalizedText(item.label, locale) ?? formatMetricLabel(key),
         value: item.value,
         format: asString(item.format),
         unit: asString(item.unit),
@@ -840,23 +910,23 @@ function normalizeRawHeaderFields(value: unknown): ExplorerHeaderField[] | undef
   return fields.length > 0 ? fields : undefined;
 }
 
-function normalizeDetails(payload: unknown, node?: ExplorerTreeNode): ExplorerDetails {
+function normalizeDetails(payload: unknown, locale: Locale, node?: ExplorerTreeNode): ExplorerDetails {
   const source = unwrapDetailsPayload(payload);
   const responseNode = isRecord(source.node) ? source.node : {};
-  const headerFields = normalizeHeaderFields(source.header);
-  const rawHeader = normalizeRawHeaderFields(source.header);
+  const headerFields = normalizeHeaderFields(source.header, locale);
+  const rawHeader = normalizeRawHeaderFields(source.header, locale);
   const rawSummary = isRecord(source.summary) ? source.summary : undefined;
   const detailsType = asString(source.type) ?? asString(responseNode.type) ?? node?.type ?? "node";
   const detailsProtocolType = asString(source.protocolType) ?? asString(source.protocol_type) ?? asString(responseNode.protocolType) ?? asString(responseNode.protocol_type) ?? node?.protocolType;
   const summaryCards = [
-    ...normalizeSummaryCards(source.summary, detailsType, detailsProtocolType),
-    ...normalizeSummaryCards(source.summaryCards, detailsType, detailsProtocolType),
-    ...normalizeSummaryCards(source.cards, detailsType, detailsProtocolType),
-    ...normalizeSummaryCards(source.metrics, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.summary, locale, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.summaryCards, locale, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.cards, locale, detailsType, detailsProtocolType),
+    ...normalizeSummaryCards(source.metrics, locale, detailsType, detailsProtocolType),
   ];
   const latest = isRecord(source.latest) ? source.latest : isRecord(source.latestSnapshot) ? source.latestSnapshot : isRecord(source.snapshot) ? source.snapshot : null;
   const latestCards = summaryCards.length === 0 && latest
-    ? Object.entries(latest).slice(0, 8).map(([key, value]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, value) }))
+    ? Object.entries(latest).slice(0, 8).map(([key, value]) => ({ label: formatMetricLabel(key), value: formatFieldValue(key, value, locale) }))
     : [];
   const dataQuality = isRecord(source.dataQuality) ? source.dataQuality : isRecord(source.data_quality) ? source.data_quality : {};
   const warnings = [
@@ -892,7 +962,7 @@ function uniqueMetricRows(rows: Metric[]): Metric[] {
   });
 }
 
-function buildNodeCurrentMetrics(details: ExplorerDetails | null, selectedNode?: ExplorerTreeNode,): Metric[] {
+function buildNodeCurrentMetrics(details: ExplorerDetails | null, locale: Locale, selectedNode?: ExplorerTreeNode): Metric[] {
   const headerRows: Metric[] = (details?.headerFields.length
     ? details.headerFields
     : selectedNode?.headerFields ?? []
@@ -915,7 +985,7 @@ function buildNodeCurrentMetrics(details: ExplorerDetails | null, selectedNode?:
         .slice(0, 8)
         .map(([key, value]) => ({
           label: formatMetricLabel(key),
-          value: formatFieldValue(key, value),
+          value: formatFieldValue(key, value, locale),
         }))
     : [];
 
@@ -993,55 +1063,6 @@ function formatDate(timestamp: string): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function toReturns(values: number[]): number[] {
-  const returns: number[] = [];
-  for (let index = 1; index < values.length; index += 1) {
-    const previous = values[index - 1];
-    const current = values[index];
-    if (previous > 0 && current > 0) returns.push(current / previous - 1);
-  }
-  return returns;
-}
-
-function pearson(left: number[], right: number[]): number {
-  const count = Math.min(left.length, right.length);
-  if (count < 2) return 0;
-  const leftValues = left.slice(0, count);
-  const rightValues = right.slice(0, count);
-  const leftMean = leftValues.reduce((sum, value) => sum + value, 0) / count;
-  const rightMean = rightValues.reduce((sum, value) => sum + value, 0) / count;
-  let covariance = 0;
-  let leftVariance = 0;
-  let rightVariance = 0;
-  for (let index = 0; index < count; index += 1) {
-    const leftDelta = leftValues[index] - leftMean;
-    const rightDelta = rightValues[index] - rightMean;
-    covariance += leftDelta * rightDelta;
-    leftVariance += leftDelta * leftDelta;
-    rightVariance += rightDelta * rightDelta;
-  }
-  const denominator = Math.sqrt(leftVariance * rightVariance);
-  return denominator === 0 ? 0 : covariance / denominator;
-}
-
-function optimalF(returns: number[]): number {
-  if (returns.length === 0) return 0;
-  let bestFraction = 0;
-  let bestGrowth = Number.NEGATIVE_INFINITY;
-  for (let step = 0; step <= 100; step += 1) {
-    const fraction = step / 100;
-    const growth = returns.reduce((sum, value) => {
-      const period = 1 + fraction * value;
-      return period > 0 ? sum + Math.log(period) : Number.NEGATIVE_INFINITY;
-    }, 0);
-    if (growth > bestGrowth) {
-      bestGrowth = growth;
-      bestFraction = fraction;
-    }
-  }
-  return bestFraction;
-}
-
 function formatPercent(value: number): string {
   const percent = Math.abs(value) <= 1 ? value * 100 : value;
   return `${percent.toFixed(2)}%`;
@@ -1051,9 +1072,120 @@ function formatPercentOrNA(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value) ? "N/A" : formatPercent(value);
 }
 
-function formatPercentPointsOrNA(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+function formatPercentPointsOrDash(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return `${value.toFixed(2)}%`;
+}
+
+function formatRiskPercentPointsOrDash(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${Math.abs(value).toFixed(2)}%`;
+}
+
+function formatLifetimeDays(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function getChangeValueClassName(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value === 0) return "text-slate-100";
+  return value > 0 ? "text-emerald-300" : "text-rose-300";
+}
+
+type StrategyMetricKey =
+  | "change1dPct"
+  | "change7dPct"
+  | "change1yPct"
+  | "changeYtdPct"
+  | "apy30dPct"
+  | "apyAllPct"
+  | "dailyVar95Pct"
+  | "lifetimeDays";
+
+type StrategySortKey = "name" | StrategyMetricKey;
+type SortDirection = "asc" | "desc";
+
+type StrategyMetricColumn = {
+  key: StrategyMetricKey;
+  label: string;
+  hint: string;
+  format: (value: number | null) => string;
+  valueClassName: (value: number | null) => string;
+};
+
+const YTD_TOOLTIP = "Изменение unit price с начала текущего календарного года (YTD).";
+const VAR_95_TOOLTIP = "Максимальная ожидаемая однодневная потеря при 95% уровне доверия на основе исторических изменений unit price";
+
+const STRATEGY_METRIC_COLUMNS: StrategyMetricColumn[] = [
+  {
+    key: "change1dPct",
+    label: "1 day change",
+    hint: "Изменение unit price за последний день.",
+    format: formatPercentPointsOrDash,
+    valueClassName: getChangeValueClassName,
+  },
+  {
+    key: "change7dPct",
+    label: "1 week change",
+    hint: "Изменение unit price за последнюю неделю.",
+    format: formatPercentPointsOrDash,
+    valueClassName: getChangeValueClassName,
+  },
+  {
+    key: "change1yPct",
+    label: "1 year change",
+    hint: "Изменение unit price за последний год.",
+    format: formatPercentPointsOrDash,
+    valueClassName: getChangeValueClassName,
+  },
+  {
+    key: "changeYtdPct",
+    label: "This year change",
+    hint: YTD_TOOLTIP,
+    format: formatPercentPointsOrDash,
+    valueClassName: getChangeValueClassName,
+  },
+  {
+    key: "apy30dPct",
+    label: "30D APY",
+    hint: "Годовая доходность на основе изменения unit price за последние 30 дней.",
+    format: formatPercentPointsOrDash,
+    valueClassName: () => "text-cyan-200",
+  },
+  {
+    key: "apyAllPct",
+    label: "All-time APY",
+    hint: "Годовая доходность за всю доступную историю unit price.",
+    format: formatPercentPointsOrDash,
+    valueClassName: () => "text-cyan-200",
+  },
+  {
+    key: "dailyVar95Pct",
+    label: "1 day VaR (95%)",
+    hint: VAR_95_TOOLTIP,
+    format: formatRiskPercentPointsOrDash,
+    valueClassName: () => "text-amber-200",
+  },
+  {
+    key: "lifetimeDays",
+    label: "Lifetime",
+    hint: "Количество полных дней между первым и последним наблюдением стратегии.",
+    format: formatLifetimeDays,
+    valueClassName: () => "text-slate-100",
+  },
+];
+
+function compareNullableMetricValues(
+  left: number | null,
+  right: number | null,
+  direction: SortDirection,
+): number {
+  const leftMissing = left === null || !Number.isFinite(left);
+  const rightMissing = right === null || !Number.isFinite(right);
+  if (leftMissing && rightMissing) return 0;
+  if (leftMissing) return 1;
+  if (rightMissing) return -1;
+  return direction === "asc" ? left - right : right - left;
 }
 
 function formatRatioPercent(value: number | null | undefined, digits = 1): string {
@@ -1069,6 +1201,22 @@ function formatNumber(value: number | null | undefined): string {
 function formatNumberOrNA(value: number | null | undefined, digits = 4): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
   return value.toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+function formatAdvancedNumber(value: number | null | undefined, digits = 2): string {
+  return value === null || value === undefined || !Number.isFinite(value) ? "—" : value.toFixed(digits);
+}
+
+function formatCorrelation(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function autocorrelationInterpretation(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "Unavailable";
+  if (value > 0.2) return "Trend persistence";
+  if (value < -0.2) return "Mean reversion";
+  return "Weak / neutral";
 }
 
 function formatUsdOrNA(value: number | null | undefined): string {
@@ -1170,14 +1318,51 @@ function isPercentField(value: string): boolean {
   );
 }
 
-function formatFieldValue(field: string, value: unknown): string {
-  if (value === null || value === undefined) return formatEmptyValue();
+function isPercentagePointsField(value: string): boolean {
+  return value.replace(/[\s_-]+/g, "").toLowerCase().endsWith("pct");
+}
+
+function normalizeFieldKey(value: string): string {
+  return value.replace(/[\s_-]+/g, "").toLowerCase();
+}
+
+function isDailyVar95Field(value: string): boolean {
+  return normalizeFieldKey(value) === "dailyvar95pct";
+}
+
+function isLifetimeDaysField(value: string): boolean {
+  return normalizeFieldKey(value) === "lifetimedays";
+}
+
+function isStrategyContractMetricField(value: string): boolean {
+  return [
+    "change1dpct",
+    "change7dpct",
+    "change1ypct",
+    "changeytdpct",
+    "apy30dpct",
+    "apyallpct",
+    "dailyvar95pct",
+    "lifetimedays",
+  ].includes(normalizeFieldKey(value));
+}
+
+function isCategoryField(value: string): boolean {
+  return normalizeFieldKey(value) === "category";
+}
+
+function formatFieldValue(field: string, value: unknown, locale: Locale = "en"): string {
+  if (value === null || value === undefined) return isStrategyContractMetricField(field) ? "—" : formatEmptyValue();
+  if (isCategoryField(field)) return getLocalizedCategory(value, locale) ?? formatEmptyValue();
   if (isAumField(field) || isUsdField(field)) {
     return formatUsdOrNA(asNumber(value));
   }
+  if (isLifetimeDaysField(field)) return formatLifetimeDays(asNumber(value));
   if (isPercentField(field)) {
     const numericValue = asNumber(value);
-    return numericValue === undefined ? formatValue(value) : formatPercent(numericValue);
+    if (numericValue === undefined) return formatValue(value);
+    if (isDailyVar95Field(field)) return formatRiskPercentPointsOrDash(numericValue);
+    return isPercentagePointsField(field) ? formatPercentPointsOrDash(numericValue) : formatPercent(numericValue);
   }
 
   return formatValue(value);
@@ -1680,6 +1865,57 @@ function normalizeBenchmarkOptions(payload: unknown): BenchmarkOption[] {
     });
 }
 
+function normalizeAdvancedMetrics(payload: unknown): AdvancedMetricsResponse | null {
+  if (!isRecord(payload)) return null;
+  const id = asString(payload.id);
+  const scopeType = payload.scopeType === "strategy" || payload.scopeType === "strategy_group"
+    ? payload.scopeType
+    : null;
+  const window = payload.window === "30d" || payload.window === "90d" || payload.window === "all"
+    ? payload.window
+    : null;
+  if (!id || !scopeType || !window) return null;
+
+  const correlations = (Array.isArray(payload.correlations) ? payload.correlations : []).flatMap((item): AdvancedMarketCorrelation[] => {
+    if (!isRecord(item)) return [];
+    const symbol = asString(item.symbol);
+    if (!symbol) return [];
+    return [{
+      symbol,
+      correlation: nullableNumber(item.correlation),
+      observations: Math.max(0, Math.trunc(asNumber(item.observations) ?? 0)),
+    }];
+  });
+  const autocorrelations = (Array.isArray(payload.autocorrelations) ? payload.autocorrelations : []).flatMap((item): AdvancedReturnAutocorrelation[] => {
+    if (!isRecord(item)) return [];
+    const lagDays = asNumber(item.lagDays);
+    if (lagDays === undefined || !Number.isInteger(lagDays)) return [];
+    return [{
+      lagDays,
+      autocorrelation: nullableNumber(item.autocorrelation),
+      observations: Math.max(0, Math.trunc(asNumber(item.observations) ?? 0)),
+    }];
+  });
+
+  return {
+    id,
+    scopeType,
+    window,
+    observations: Math.max(0, Math.trunc(asNumber(payload.observations) ?? 0)),
+    correlations,
+    autocorrelations,
+    optimalF: nullableNumber(payload.optimalFUncapped ?? payload.optimalF),
+    optimalFCapped: nullableNumber(payload.optimalFCapped),
+    kellyApprox: nullableNumber(payload.kellyApprox),
+    meanDailyReturn: nullableNumber(payload.meanDailyReturn),
+    dailyVolatility: nullableNumber(payload.dailyVolatility),
+    maxLoss: nullableNumber(payload.maxLoss),
+    warnings: (Array.isArray(payload.warnings) ? payload.warnings : [])
+      .map(asString)
+      .filter((warning): warning is string => Boolean(warning)),
+  };
+}
+
 function readSavedChartMode(): ChartMode {
   try {
     const value = window.localStorage.getItem(CHART_MODE_STORAGE_KEY);
@@ -1898,24 +2134,6 @@ function toChartViewData(points: VisibleSeriesPoint[]): Array<{ time: number; va
   return points.map((point) => ({ time: point.time, value: point.value }));
 }
 
-function createSeriesFromChartViewData(label: string, data: Array<{ time: number; value: number }>, type: "primary" | "benchmark", symbol?: string): NormalizedChartSeries {
-  return {
-    id: type,
-    chartKey: type,
-    label,
-    type,
-    symbol,
-    warnings: [],
-    points: data.map((point) => ({
-      timestamp: new Date(point.time * 1000).toISOString(),
-      value: point.value,
-      rawValue: point.value,
-      normalizedValue: null,
-      raw: point,
-    })),
-  };
-}
-
 function buildChartView({
   chartMode,
   primarySeries,
@@ -2005,38 +2223,6 @@ function buildChartView({
   };
 }
 
-function getFiniteChartViewValues(data: Array<{ value: number }>): number[] {
-  return data
-    .map((point) => point.value)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
-}
-
-function getReturnsByTimestamp(series: NormalizedChartSeries): Array<{ timestamp: string; value: number }> {
-  const returns: Array<{ timestamp: string; value: number }> = [];
-  const points = series.points.filter((point) => typeof point.value === "number" && Number.isFinite(point.value) && point.value > 0);
-  for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1].value;
-    const current = points[index].value;
-    if (previous !== null && current !== null && previous > 0 && current > 0) {
-      returns.push({ timestamp: points[index].timestamp, value: current / previous - 1 });
-    }
-  }
-  return returns;
-}
-
-function pearsonAligned(left: NormalizedChartSeries, right: NormalizedChartSeries): number | null {
-  const rightReturns = new Map(getReturnsByTimestamp(right).map((item) => [item.timestamp, item.value]));
-  const leftValues: number[] = [];
-  const rightValues: number[] = [];
-  getReturnsByTimestamp(left).forEach((item) => {
-    const rightValue = rightReturns.get(item.timestamp);
-    if (rightValue === undefined) return;
-    leftValues.push(item.value);
-    rightValues.push(rightValue);
-  });
-  return leftValues.length >= 2 ? pearson(leftValues, rightValues) : null;
-}
-
 function MetricsTable({
   metrics,
   subtitle = "Collected and verified by ANMI Track",
@@ -2058,7 +2244,9 @@ function MetricsTable({
             {metrics.map((metric) => (
               <tr key={metric.label} title={metric.hint} className="border-b border-white/10 last:border-b-0">
                 <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">{metric.label}</td>
-                <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-white">{metric.value}</td>
+                <td className={cn("px-3 py-2.5 text-right font-semibold tabular-nums text-white", metric.valueClassName)}>
+                  {metric.value}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -2181,11 +2369,14 @@ function ExposureMixBar({ items }: { items: ExposureMixItem[] }): JSX.Element | 
 export function StrategiesPage(): JSX.Element {
   const { strategyId } = useParams<{ strategyId: string }>();
   const navigate = useNavigate();
+  const locale = useLocale();
   const [strategies, setStrategies] = useState<StrategySummary[]>([]);
   const [primaryChartCache, setPrimaryChartCache] = useState<PrimaryChartCache>({});
   const [benchmarkOptions, setBenchmarkOptions] = useState<BenchmarkOption[]>([]);
   const [benchmarkCache, setBenchmarkCache] = useState<BenchmarkCache>({});
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
+  const [advancedMetricsWindow, setAdvancedMetricsWindow] = useState<AdvancedMetricsWindow>(DEFAULT_ADVANCED_METRICS_WINDOW);
+  const [advancedMetrics, setAdvancedMetrics] = useState<AdvancedMetricsResponse | null>(null);
   const [headerStrategy, setHeaderStrategy] = useState<StrategyGroupHeader | null>(null);
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
   const [treeWarnings, setTreeWarnings] = useState<StructuredWarning[]>([]);
@@ -2202,12 +2393,14 @@ export function StrategiesPage(): JSX.Element {
   const [isLoadingHeader, setIsLoadingHeader] = useState(false);
   const [isLoadingNav, setIsLoadingNav] = useState(false);
   const [isLoadingBenchmarkHistory, setIsLoadingBenchmarkHistory] = useState(false);
+  const [isLoadingAdvancedMetrics, setIsLoadingAdvancedMetrics] = useState(false);
   const [isLoadingTree, setIsLoadingTree] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [headerError, setHeaderError] = useState<string | null>(null);
   const [navError, setNavError] = useState<string | null>(null);
+  const [advancedMetricsError, setAdvancedMetricsError] = useState<string | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -2236,10 +2429,13 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     let active = true;
     setIsLoadingStrategies(true);
-    fetchJson("/api/v1/strategy-groups")
-      .then((payload) => {
+    Promise.all([
+      fetchJson("/api/v1/strategies"),
+      fetchJson("/api/v1/strategy-groups"),
+    ])
+      .then(([strategiesPayload, groupsPayload]) => {
         if (!active) return;
-        const normalized = normalizeStrategies(payload);
+        const normalized = normalizeStrategies(strategiesPayload, groupsPayload, locale);
         setStrategies(normalized);
         setError(normalized.length === 0 ? "No strategies were returned by the API." : null);
       })
@@ -2254,7 +2450,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, []);
+  }, [locale]);
 
   useEffect(() => {
     let active = true;
@@ -2322,9 +2518,7 @@ export function StrategiesPage(): JSX.Element {
       return [
         "AUM",
         "Net Return",
-        "1W APY",
-        "1M APY",
-        "All-time APY",
+        ...STRATEGY_METRIC_COLUMNS.map((column) => column.label),
         "Max Drawdown",
         "Drawdown",
         "Volatility",
@@ -2336,15 +2530,24 @@ export function StrategiesPage(): JSX.Element {
 
     const source = headerStrategy ?? selectedStrategy;
     const warningsCount = headerStrategy?.warnings?.length ?? 0;
-    const apy7dPct = headerStrategy?.apy7dPct !== undefined ? headerStrategy.apy7dPct : selectedStrategy?.apy7dPct;
-    const apy30dPct = headerStrategy?.apy30dPct !== undefined ? headerStrategy.apy30dPct : selectedStrategy?.apy30dPct;
-    const apyAllPct = headerStrategy?.apyAllPct !== undefined ? headerStrategy.apyAllPct : selectedStrategy?.apyAllPct;
+    const contractMetrics = STRATEGY_METRIC_COLUMNS.map((column): Metric => {
+      const value = column.key === "lifetimeDays"
+        ? selectedStrategy?.lifetimeDays ?? null
+        : headerStrategy
+          ? headerStrategy[column.key]
+          : selectedStrategy?.[column.key] ?? null;
+
+      return {
+        label: column.label,
+        value: column.format(value),
+        hint: column.hint,
+        valueClassName: column.valueClassName(value),
+      };
+    });
     const metrics: Metric[] = [
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
       { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
-      { label: "1W APY", value: formatPercentPointsOrNA(apy7dPct), hint: "Annualized return derived from the trailing 7-day Unit Price change." },
-      { label: "1M APY", value: formatPercentPointsOrNA(apy30dPct), hint: "Annualized return derived from the trailing 30-day Unit Price change." },
-      { label: "All-time APY", value: formatPercentPointsOrNA(apyAllPct), hint: "Annualized return over the complete available track record." },
+      ...contractMetrics,
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
       { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
       { label: "Sharpe ratio", value: formatNumberOrNA(headerStrategy?.sharpe ?? headerStrategy?.sharpeRatio, 2), hint: "Risk-adjusted return" },
@@ -2455,10 +2658,10 @@ export function StrategiesPage(): JSX.Element {
     setIsLoadingHeader(true);
     setHeaderError(null);
     setHeaderStrategy(null);
-    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/header`)
+    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/header`)
       .then((payload) => {
         if (!active) return;
-        setHeaderStrategy(normalizeGroupHeader(payload, selectedStrategy));
+        setHeaderStrategy(normalizeGroupHeader(payload, locale, selectedStrategy));
       })
       .catch(() => {
         if (!active) return;
@@ -2471,7 +2674,42 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [selectedStrategy]);
+  }, [locale, selectedStrategy]);
+
+  useEffect(() => {
+    if (!selectedStrategy) {
+      setAdvancedMetrics(null);
+      setAdvancedMetricsError(null);
+      return;
+    }
+    let active = true;
+    setIsLoadingAdvancedMetrics(true);
+    setAdvancedMetrics(null);
+    setAdvancedMetricsError(null);
+    fetchJson(
+      `/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/advanced-metrics?window=${advancedMetricsWindow}`,
+    )
+      .then((payload) => {
+        if (!active) return;
+        const normalized = normalizeAdvancedMetrics(payload);
+        if (normalized === null) {
+          setAdvancedMetricsError("Advanced metrics response is unavailable.");
+          return;
+        }
+        setAdvancedMetrics(normalized);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAdvancedMetrics(null);
+        setAdvancedMetricsError("Unable to load persisted advanced metrics.");
+      })
+      .finally(() => {
+        if (active) setIsLoadingAdvancedMetrics(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [advancedMetricsWindow, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -2493,7 +2731,7 @@ export function StrategiesPage(): JSX.Element {
       metric,
       normalize: "false",
     });
-    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/chart?${params.toString()}`)
+    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/chart?${params.toString()}`)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeChartResponse(payload, chartMode);
@@ -2559,10 +2797,10 @@ export function StrategiesPage(): JSX.Element {
     setHistoryPage(1);
     setHistorySearchInput("");
     setHistorySearch("");
-    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.id)}/tree`)
+    fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/tree`)
       .then((payload) => {
         if (!active) return;
-        const normalized = normalizeTree(payload);
+        const normalized = normalizeTree(payload, locale);
         setTreeNodes(normalized);
         setTreeWarnings(getTreeStructuredWarnings(payload));
         setSelectedTreeNode(getFirstTreeNode(normalized) ?? null);
@@ -2579,7 +2817,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [selectedStrategy]);
+  }, [locale, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode) {
@@ -2596,7 +2834,7 @@ export function StrategiesPage(): JSX.Element {
     setNodeDetails(null);
     setHistoryData(createEmptyHistory(1, historyPageSize));
     setSelectedDataset(getDefaultDatasetForNode(selectedTreeNode));
-    const detailsUrl = buildExplorerDetailsUrl("/api/v1", selectedStrategy.id, selectedTreeNode);
+    const detailsUrl = buildExplorerDetailsUrl("/api/v1", selectedStrategy.groupId, selectedTreeNode);
     if (import.meta.env.DEV) {
       console.debug("Explorer details request", { node: selectedTreeNode, url: detailsUrl });
     }
@@ -2606,7 +2844,7 @@ export function StrategiesPage(): JSX.Element {
         if (import.meta.env.DEV) {
           console.debug("Explorer details raw response", payload);
         }
-        const details = normalizeDetails(payload, selectedTreeNode);
+        const details = normalizeDetails(payload, locale, selectedTreeNode);
         setNodeDetails(details);
       })
       .catch(() => {
@@ -2623,7 +2861,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [selectedStrategy, selectedTreeNode]);
+  }, [locale, selectedStrategy, selectedTreeNode]);
 
   useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode || !selectedDataset) return;
@@ -2632,7 +2870,7 @@ export function StrategiesPage(): JSX.Element {
     setHistoryError(null);
     const historyUrl = buildExplorerHistoryUrl(
       "/api/v1",
-      selectedStrategy.id,
+      selectedStrategy.groupId,
       selectedTreeNode,
       selectedDataset,
       historyPage,
@@ -2674,31 +2912,6 @@ export function StrategiesPage(): JSX.Element {
       selectedBenchmark,
       benchmarkCache,
     });
-    const primarySeries = createSeriesFromChartViewData(chartView.primaryLabel, chartView.primaryData, "primary");
-    const benchmarkSeries = chartView.benchmarkLabel
-      ? createSeriesFromChartViewData(chartView.benchmarkLabel, chartView.benchmarkData, "benchmark", selectedBenchmark ?? undefined)
-      : undefined;
-    const values = getFiniteChartViewValues(chartView.primaryData);
-    const strategyReturns = toReturns(values);
-    const correlation = primarySeries && benchmarkSeries ? pearsonAligned(primarySeries, benchmarkSeries) : null;
-    const correlations = correlation === null || !benchmarkSeries ? [] : [`${benchmarkSeries.label} ${correlation.toFixed(2)}`];
-    const advancedMetrics: Metric[] = [
-      {
-        label: "Correlation to markets",
-        value: correlations.length > 0 ? correlations.slice(0, 2).join(" | ") : "N/A",
-        hint: correlations.length > 2 ? correlations.slice(2).join(" | ") : "Calculated from visible API benchmark series.",
-      },
-      {
-        label: "Autocorrelation",
-        value: pearson(strategyReturns.slice(1), strategyReturns.slice(0, -1)).toFixed(2),
-        hint: "Lag-1 autocorrelation of strategy returns.",
-      },
-      {
-        label: "Optimal-F",
-        value: formatPercent(optimalF(strategyReturns)),
-        hint: "Prototype estimate based on AUM or unit price returns.",
-      },
-    ];
     if (import.meta.env.DEV) {
       console.debug("ChartView", {
         mode: chartView.mode,
@@ -2708,7 +2921,7 @@ export function StrategiesPage(): JSX.Element {
         firstBenchmark: chartView.benchmarkData[0],
       });
     }
-    return { advancedMetrics, chartView };
+    return { chartView };
   }, [benchmarkCache, chartMode, primaryChartCache, selectedBenchmark, selectedStrategy]);
 
   function handleStrategyChange(nextId: string): void {
@@ -2960,27 +3173,138 @@ export function StrategiesPage(): JSX.Element {
         </div>
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/[0.025] p-4">
-          <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+          <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Advanced calculated metrics</div>
-              <p className="mt-1 text-xs text-slate-500">Deeper performance diagnostics based on the verified strategy track record</p>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">Advanced Metrics</div>
+              <p className="mt-1 text-xs text-slate-500">Persisted analytics calculated by ANMI Track from complete daily unit-price returns</p>
+            </div>
+            <div className="inline-flex self-start rounded-lg border border-white/10 bg-slate-950/40 p-1 sm:self-auto">
+              {(["30d", "90d", "all"] as const).map((window) => (
+                <button
+                  key={window}
+                  type="button"
+                  onClick={() => setAdvancedMetricsWindow(window)}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] transition",
+                    advancedMetricsWindow === window
+                      ? "bg-cyan-300/15 text-cyan-100"
+                      : "text-slate-500 hover:text-slate-200",
+                  )}
+                >
+                  {window}
+                </button>
+              ))}
             </div>
           </div>
-          <div className="overflow-hidden rounded-xl border border-white/10">
-            <table className="w-full text-sm">
-              <tbody>
-                {analytics.advancedMetrics.map((metric) => (
-                  <tr key={metric.label} className="border-b border-white/10 last:border-b-0">
-                    <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">{metric.label}</td>
-                    <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-white">{metric.value}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="mt-3 text-xs leading-5 text-slate-500">
-            Optimal-F note: Prototype estimate based on AUM or unit price returns. Production calculation should use trade-level returns or risk-normalized R-multiples.
-          </p>
+          {isLoadingAdvancedMetrics ? (
+            <div className="rounded-xl border border-white/10 bg-slate-950/30 px-4 py-8 text-center text-sm text-slate-400">
+              <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-cyan-200" />
+              Loading persisted advanced metrics…
+            </div>
+          ) : advancedMetricsError ? (
+            <div className="rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100">
+              {advancedMetricsError}
+            </div>
+          ) : advancedMetrics ? (
+            <>
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_300px]">
+                <div className="overflow-hidden rounded-xl border border-white/10 bg-slate-950/20">
+                  <div className="border-b border-white/10 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Correlation to markets
+                  </div>
+                  <div className="max-h-80 overflow-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-[#07111f] text-[10px] uppercase tracking-[0.12em] text-slate-600">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-semibold">Market</th>
+                          <th className="px-3 py-2 text-right font-semibold">Correlation</th>
+                          <th className="px-3 py-2 text-right font-semibold">Observations</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {advancedMetrics.correlations.map((metric) => {
+                          const isHigh = metric.correlation !== null && Math.abs(metric.correlation) > 0.6;
+                          return (
+                            <tr key={metric.symbol} className={cn("border-t border-white/[0.07]", isHigh ? "bg-amber-300/[0.06]" : null)}>
+                              <td className="px-3 py-2 font-medium text-slate-200">{metric.symbol}</td>
+                              <td className={cn("px-3 py-2 text-right font-semibold tabular-nums", isHigh ? "text-amber-200" : "text-slate-200")}>
+                                {formatCorrelation(metric.correlation)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-slate-500">{metric.observations}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-white/10 bg-slate-950/20">
+                  <div className="border-b border-white/10 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Autocorrelation
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="text-[10px] uppercase tracking-[0.12em] text-slate-600">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold">Lag</th>
+                        <th className="px-3 py-2 text-right font-semibold">Autocorrelation</th>
+                        <th className="px-3 py-2 text-right font-semibold">Interpretation</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {advancedMetrics.autocorrelations.map((metric) => (
+                        <tr key={metric.lagDays} className="border-t border-white/[0.07]">
+                          <td className="px-3 py-2 font-medium text-slate-200">{metric.lagDays}d</td>
+                          <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-200">
+                            {formatCorrelation(metric.autocorrelation)}
+                          </td>
+                          <td className="px-3 py-2 text-right text-xs text-slate-500">
+                            {autocorrelationInterpretation(metric.autocorrelation)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.045] p-4">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200/80">Optimal-F</div>
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.12em] text-slate-600">Optimal-F</div>
+                      <div className="mt-1 text-xl font-semibold tabular-nums text-white">{formatAdvancedNumber(advancedMetrics.optimalF)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.12em] text-slate-600">Capped</div>
+                      <div className="mt-1 text-xl font-semibold tabular-nums text-cyan-100">{formatAdvancedNumber(advancedMetrics.optimalFCapped)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.12em] text-slate-600">Kelly approx.</div>
+                      <div className="mt-1 font-semibold tabular-nums text-slate-200">{formatAdvancedNumber(advancedMetrics.kellyApprox)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.12em] text-slate-600">Observations</div>
+                      <div className="mt-1 font-semibold tabular-nums text-slate-200">{advancedMetrics.observations}</div>
+                    </div>
+                  </div>
+                  {advancedMetrics.observations < 30 ? (
+                    <div className="mt-4 rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+                      Small sample: only {advancedMetrics.observations} daily returns are available.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              {advancedMetrics.warnings.length > 0 ? (
+                <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-xs leading-5 text-amber-100">
+                  {advancedMetrics.warnings.map((warning) => <div key={warning}>{warning}</div>)}
+                </div>
+              ) : null}
+              <p className="mt-3 text-xs leading-5 text-slate-500">
+                Optimal-F is estimated from historical daily returns and is not a guaranteed safe allocation.
+              </p>
+            </>
+          ) : null}
         </section>
 
         <DataExplorer
@@ -3193,11 +3517,12 @@ function DataExplorer({
   onHistoryPageSizeChange: (pageSize: (typeof HISTORY_PAGE_SIZES)[number]) => void;
   onSelectNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
+  const locale = useLocale();
   const flatNodes = useMemo(() => flattenExplorerNodes(nodes), [nodes]);
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
   const canGoBack = hasPreviousHistoryPage;
   const canGoForward = hasNextHistoryPage;
-  const currentNodeMetrics = buildNodeCurrentMetrics(details, selectedNode);
+  const currentNodeMetrics = buildNodeCurrentMetrics(details, locale, selectedNode);
   const exposureMix = buildExposureMix(details, selectedNode);
   const warningsToShow = selectedNodeWarnings.length > 0
     ? selectedNodeWarnings
@@ -3409,18 +3734,21 @@ function StatusIcon({ status }: { status: string | null }): JSX.Element {
 
 function formatHistoryCell(column: ExplorerHistoryColumn, row: HistoryRecord): string {
   const value = row[column.key];
-  if (value === null || value === undefined) return formatEmptyValue();
+  if (value === null || value === undefined) return isStrategyContractMetricField(column.key) ? "—" : formatEmptyValue();
 
   const normalizedFormat = column.format?.trim().toLowerCase();
   if (normalizedFormat === "currency" || column.unit === "USD") return formatUsdOrNA(asNumber(value));
   if (normalizedFormat === "percent") {
     const numericValue = asNumber(value);
-    return numericValue === undefined ? formatValue(value) : formatPercent(numericValue);
+    if (numericValue === undefined) return formatValue(value);
+    if (isDailyVar95Field(column.key)) return formatRiskPercentPointsOrDash(numericValue);
+    return isPercentagePointsField(column.key) ? formatPercentPointsOrDash(numericValue) : formatPercent(numericValue);
   }
   if (normalizedFormat === "datetime" || column.type === "datetime" || isTimestampField(column.key)) return formatDateTime(value);
   if (normalizedFormat === "address") return formatAddress(value);
   if (normalizedFormat === "tags") return formatTags(value);
   if (normalizedFormat === "boolean" || column.type === "boolean") return typeof value === "boolean" ? (value ? "Yes" : "No") : formatValue(value);
+  if (isLifetimeDaysField(column.key)) return formatLifetimeDays(asNumber(value));
   if (normalizedFormat === "number" || column.type === "number") return formatNumberOrNA(asNumber(value));
 
   return formatFieldValue(column.key, value);
@@ -3528,15 +3856,17 @@ function MetricChip({ label, value }: { label: string; value: string }): JSX.Ele
 function StrategySelectorMetric({
   label,
   value,
+  hint,
   valueClassName,
 }: {
   label: string;
   value: string;
+  hint?: string;
   valueClassName?: string;
 }): JSX.Element {
   return (
-    <div className="min-w-0">
-      <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-600 sm:hidden">
+    <div className="min-w-0" title={hint}>
+      <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-600 lg:hidden">
         {label}
       </div>
       <div
@@ -3566,12 +3896,41 @@ function StrategySelectorGrid({
   onSelect: (strategyId: string) => void;
   onClose: () => void;
 }): JSX.Element {
+  const [sortKey, setSortKey] = useState<StrategySortKey>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const sortedStrategies = useMemo(() => {
+    return [...strategies].sort((left, right) => {
+      if (sortKey === "name") {
+        const comparison = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+        return sortDirection === "asc" ? comparison : -comparison;
+      }
+      return compareNullableMetricValues(left[sortKey], right[sortKey], sortDirection);
+    });
+  }, [sortDirection, sortKey, strategies]);
+  const desktopGridStyle = {
+    gridTemplateColumns: "minmax(180px,1.7fr) repeat(8,minmax(72px,0.7fr))",
+  };
+
+  function handleSort(nextKey: StrategySortKey): void {
+    if (sortKey === nextKey) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortKey(nextKey);
+    setSortDirection(nextKey === "name" ? "asc" : "desc");
+  }
+
+  function getSortIndicator(key: StrategySortKey): string {
+    if (sortKey !== key) return "";
+    return sortDirection === "asc" ? " ↑" : " ↓";
+  }
+
   return (
     <div
       className={cn(
         "pointer-events-auto z-[100] min-w-0 max-w-full overflow-x-hidden shadow-2xl shadow-black/70",
         "fixed inset-0 flex h-[100dvh] w-screen max-w-none flex-col rounded-none border-0 bg-slate-950",
-        "sm:absolute sm:left-0 sm:right-auto sm:top-full sm:bottom-auto sm:mt-4 sm:block sm:h-auto sm:max-h-none sm:w-[min(980px,calc(100vw-2rem))] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-white/10",
+        "sm:absolute sm:left-0 sm:right-auto sm:top-full sm:bottom-auto sm:mt-4 sm:block sm:h-auto sm:max-h-none sm:w-[min(1280px,calc(100vw-2rem))] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-white/10",
       )}
     >
       <div className="shrink-0 border-b border-white/10 bg-slate-900/95 p-4 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -3596,16 +3955,31 @@ function StrategySelectorGrid({
         />
       </div>
 
-      <div className="hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.65fr_0.55fr_0.75fr] sm:gap-4">
-        <div>Strategy</div>
-        <div>1W APY</div>
-        <div>1M APY</div>
-        <div>All APY</div>
-        <div>DD</div>
-        <div>Unit Price</div>
+      <div
+        className="hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 lg:grid lg:gap-2"
+        style={desktopGridStyle}
+      >
+        <button
+          type="button"
+          onClick={() => handleSort("name")}
+          className="text-left transition hover:text-cyan-100"
+        >
+          Strategy{getSortIndicator("name")}
+        </button>
+        {STRATEGY_METRIC_COLUMNS.map((column) => (
+          <button
+            key={column.key}
+            type="button"
+            title={column.hint}
+            onClick={() => handleSort(column.key)}
+            className="min-w-0 whitespace-normal text-left leading-4 transition hover:text-cyan-100"
+          >
+            {column.label}{getSortIndicator(column.key)}
+          </button>
+        ))}
       </div>
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] sm:max-h-[360px]">
-        {strategies.map((strategy) => {
+        {sortedStrategies.map((strategy) => {
           const selected = strategy.id === selectedId;
 
           return (
@@ -3615,50 +3989,38 @@ function StrategySelectorGrid({
               onClick={() => onSelect(strategy.id)}
               className={cn(
                 "group flex w-full min-w-0 max-w-full cursor-pointer flex-col gap-3 border-t border-white/10 px-4 py-4 text-left text-sm transition-all duration-200",
-                "sm:grid sm:grid-cols-[minmax(0,1.7fr)_0.55fr_0.55fr_0.65fr_0.55fr_0.75fr] sm:items-center sm:gap-4 sm:px-5",
-                "sm:hover:-translate-y-[1px] sm:hover:border-cyan-300/30 sm:hover:bg-cyan-300/10 sm:hover:shadow-lg sm:hover:shadow-cyan-950/25",
+                "lg:grid lg:items-center lg:gap-2 lg:px-5",
+                "lg:hover:-translate-y-[1px] lg:hover:border-cyan-300/30 lg:hover:bg-cyan-300/10 lg:hover:shadow-lg lg:hover:shadow-cyan-950/25",
                 selected ? "border-l-2 border-l-cyan-300 bg-cyan-300/15 text-white" : "bg-slate-950 text-slate-300",
               )}
+              style={desktopGridStyle}
             >
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <div className="whitespace-normal break-words font-semibold leading-5 text-white transition [overflow-wrap:anywhere] group-hover:text-cyan-50 sm:truncate">
                     {strategy.name}
                   </div>
-                  <ArrowRight className="hidden h-4 w-4 shrink-0 text-cyan-100 opacity-0 transition group-hover:translate-x-1 group-hover:opacity-100 sm:block" />
+                  <ArrowRight className="hidden h-4 w-4 shrink-0 text-cyan-100 opacity-0 transition group-hover:translate-x-1 group-hover:opacity-100 lg:block" />
                 </div>
                 {strategy.description ? (
-                  <div className="mt-1 whitespace-normal break-words text-xs leading-5 text-slate-500 transition [overflow-wrap:anywhere] group-hover:text-slate-300 sm:truncate">
+                  <div className="mt-1 whitespace-normal break-words text-xs leading-5 text-slate-500 transition [overflow-wrap:anywhere] group-hover:text-slate-300 lg:truncate">
                     {strategy.description}
                   </div>
                 ) : null}
               </div>
-              <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 sm:contents">
-                <StrategySelectorMetric
-                  label="1W APY"
-                  value={formatPercentPointsOrNA(strategy.apy7dPct)}
-                  valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
-                />
-                <StrategySelectorMetric
-                  label="1M APY"
-                  value={formatPercentPointsOrNA(strategy.apy30dPct)}
-                  valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
-                />
-                <StrategySelectorMetric
-                  label="All-time APY"
-                  value={formatPercentPointsOrNA(strategy.apyAllPct)}
-                  valueClassName="text-cyan-200 transition group-hover:text-cyan-100"
-                />
-                <StrategySelectorMetric
-                  label="DD"
-                  value={formatPercentOrNA(strategy.maxDrawdown)}
-                  valueClassName="text-amber-200 transition group-hover:text-amber-100"
-                />
-                <StrategySelectorMetric
-                  label="Unit Price"
-                  value={formatNumber(strategy.unitPrice)}
-                  valueClassName="text-slate-100 transition group-hover:text-white"
-                />
+              <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 lg:contents">
+                {STRATEGY_METRIC_COLUMNS.map((column) => {
+                  const value = strategy[column.key];
+                  return (
+                    <StrategySelectorMetric
+                      key={column.key}
+                      label={column.label}
+                      value={column.format(value)}
+                      hint={column.hint}
+                      valueClassName={cn(column.valueClassName(value), "transition group-hover:brightness-125")}
+                    />
+                  );
+                })}
               </div>
             </button>
           );
