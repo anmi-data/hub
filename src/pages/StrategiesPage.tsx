@@ -1826,12 +1826,54 @@ function localizedApiUrl(url: string, locale: Locale): string {
   return `${localizedUrl.pathname}${localizedUrl.search}${localizedUrl.hash}`;
 }
 
+class ApiRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseMessage: string | null,
+  ) {
+    super(responseMessage ? `Request failed: ${status} ${responseMessage}` : `Request failed: ${status}`);
+    this.name = "ApiRequestError";
+  }
+}
+
 async function fetchJson(url: string, locale?: Locale): Promise<unknown> {
   const response = await fetch(locale ? localizedApiUrl(url, locale) : url, {
     headers: locale ? { "Accept-Language": locale } : undefined,
   });
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  if (!response.ok) {
+    const errorPayload = await response.json().catch((): null => null);
+    const responseMessage = isRecord(errorPayload)
+      ? asString(errorPayload.message) ?? asString(errorPayload.error) ?? null
+      : null;
+    throw new ApiRequestError(response.status, responseMessage);
+  }
   return response.json() as Promise<unknown>;
+}
+
+function shouldRetryAdvancedMetrics(error: unknown): boolean {
+  return !(error instanceof ApiRequestError) || error.status === 404 || error.status === 429 || error.status >= 500;
+}
+
+async function fetchAdvancedMetricsJson(url: string, locale: Locale): Promise<unknown> {
+  try {
+    return await fetchJson(url, locale);
+  } catch (error) {
+    if (!shouldRetryAdvancedMetrics(error)) throw error;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 750));
+    return fetchJson(url, locale);
+  }
+}
+
+function advancedMetricsErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiRequestError)) {
+    return "Unable to reach ANMI API. Check the connection and try again.";
+  }
+  if (error.status === 404) {
+    return "Advanced metrics have not been calculated for this strategy and window yet.";
+  }
+  return error.responseMessage
+    ? `Advanced metrics API returned ${error.status}: ${error.responseMessage}`
+    : `Advanced metrics API returned HTTP ${error.status}.`;
 }
 
 function normalizeApiStatus(payload: unknown): ApiStatus {
@@ -2389,6 +2431,7 @@ export function StrategiesPage(): JSX.Element {
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [advancedMetricsWindow, setAdvancedMetricsWindow] = useState<AdvancedMetricsWindow>(DEFAULT_ADVANCED_METRICS_WINDOW);
   const [advancedMetrics, setAdvancedMetrics] = useState<AdvancedMetricsResponse | null>(null);
+  const [advancedMetricsRequestVersion, setAdvancedMetricsRequestVersion] = useState(0);
   const [headerStrategy, setHeaderStrategy] = useState<StrategyGroupHeader | null>(null);
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
   const [treeWarnings, setTreeWarnings] = useState<StructuredWarning[]>([]);
@@ -2703,7 +2746,7 @@ export function StrategiesPage(): JSX.Element {
     setIsLoadingAdvancedMetrics(true);
     setAdvancedMetrics(null);
     setAdvancedMetricsError(null);
-    fetchJson(
+    fetchAdvancedMetricsJson(
       `/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/advanced-metrics?window=${advancedMetricsWindow}`,
       locale,
     )
@@ -2716,10 +2759,10 @@ export function StrategiesPage(): JSX.Element {
         }
         setAdvancedMetrics(normalized);
       })
-      .catch(() => {
+      .catch((requestError: unknown) => {
         if (!active) return;
         setAdvancedMetrics(null);
-        setAdvancedMetricsError("Unable to load persisted advanced metrics.");
+        setAdvancedMetricsError(advancedMetricsErrorMessage(requestError));
       })
       .finally(() => {
         if (active) setIsLoadingAdvancedMetrics(false);
@@ -2727,7 +2770,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [advancedMetricsWindow, locale, selectedStrategy]);
+  }, [advancedMetricsRequestVersion, advancedMetricsWindow, locale, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -3220,8 +3263,15 @@ export function StrategiesPage(): JSX.Element {
               Loading persisted advanced metrics…
             </div>
           ) : advancedMetricsError ? (
-            <div className="rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100">
-              {advancedMetricsError}
+            <div className="flex flex-col items-start justify-between gap-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100 sm:flex-row sm:items-center">
+              <span>{advancedMetricsError}</span>
+              <button
+                type="button"
+                onClick={() => setAdvancedMetricsRequestVersion((version) => version + 1)}
+                className="shrink-0 rounded-lg border border-amber-200/20 bg-amber-100/[0.06] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-amber-100 transition hover:bg-amber-100/10"
+              >
+                Try again
+              </button>
             </div>
           ) : advancedMetrics ? (
             <>
@@ -3230,7 +3280,7 @@ export function StrategiesPage(): JSX.Element {
                   <div className="border-b border-white/10 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                     Correlation to markets
                   </div>
-                  <div className="max-h-80 overflow-auto">
+                  <div className="max-h-[344px] overflow-auto">
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-[#07111f] text-[10px] uppercase tracking-[0.12em] text-slate-600">
                         <tr>
@@ -4002,30 +4052,30 @@ function StrategySelectorGrid({
         />
       </div>
 
-      <div
-        className="hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 lg:grid lg:gap-2"
-        style={desktopGridStyle}
-      >
-        <button
-          type="button"
-          onClick={() => handleSort("name")}
-          className="text-left transition hover:text-cyan-100"
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] sm:max-h-[400px]">
+        <div
+          className="sticky top-0 z-10 hidden bg-slate-900 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 lg:grid lg:gap-2"
+          style={desktopGridStyle}
         >
-          Strategy{getSortIndicator("name")}
-        </button>
-        {STRATEGY_METRIC_COLUMNS.map((column) => (
           <button
-            key={column.key}
             type="button"
-            title={column.hint}
-            onClick={() => handleSort(column.key)}
-            className="min-w-0 whitespace-normal text-left leading-4 transition hover:text-cyan-100"
+            onClick={() => handleSort("name")}
+            className="text-left transition hover:text-cyan-100"
           >
-            {column.label}{getSortIndicator(column.key)}
+            Strategy{getSortIndicator("name")}
           </button>
-        ))}
-      </div>
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] sm:max-h-[360px]">
+          {STRATEGY_METRIC_COLUMNS.map((column) => (
+            <button
+              key={column.key}
+              type="button"
+              title={column.hint}
+              onClick={() => handleSort(column.key)}
+              className="min-w-0 whitespace-normal text-left leading-4 transition hover:text-cyan-100"
+            >
+              {column.label}{getSortIndicator(column.key)}
+            </button>
+          ))}
+        </div>
         {sortedStrategies.map((strategy) => {
           const selected = strategy.id === selectedId;
 
