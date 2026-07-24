@@ -215,6 +215,26 @@ type AdvancedMetricsResponse = {
   warnings: string[];
 };
 
+type AssetDeltaItem = {
+  assetSymbol: string;
+  balanceQuantity: number;
+  lpQuantity: number;
+  derivativeQuantity: number;
+  netDelta: number;
+  sourceSymbols: string[];
+};
+
+type AssetDeltasResponse = {
+  id: string;
+  scopeType: "strategy" | "strategy_group";
+  timestamp: string | null;
+  deltas: AssetDeltaItem[];
+  dataQuality: {
+    status: "complete" | "partial";
+    warnings: string[];
+  };
+};
+
 type ApiChartSeriesPoint = {
   timestamp: string;
   rawValue?: number | null;
@@ -1970,6 +1990,61 @@ function normalizeAdvancedMetrics(payload: unknown): AdvancedMetricsResponse | n
   };
 }
 
+function normalizeAssetDeltas(payload: unknown): AssetDeltasResponse | null {
+  if (!isRecord(payload)) return null;
+  const id = asString(payload.id);
+  const scopeType = payload.scopeType === "strategy" || payload.scopeType === "strategy_group"
+    ? payload.scopeType
+    : null;
+  if (!id || !scopeType) return null;
+
+  const deltas = (Array.isArray(payload.deltas) ? payload.deltas : []).flatMap((item): AssetDeltaItem[] => {
+    if (!isRecord(item)) return [];
+    const assetSymbol = asString(item.assetSymbol);
+    const balanceQuantity = asNumber(item.balanceQuantity);
+    const lpQuantity = asNumber(item.lpQuantity);
+    const derivativeQuantity = asNumber(item.derivativeQuantity);
+    const netDelta = asNumber(item.netDelta);
+    if (!assetSymbol || balanceQuantity === undefined || lpQuantity === undefined || derivativeQuantity === undefined || netDelta === undefined) {
+      return [];
+    }
+    return [{
+      assetSymbol,
+      balanceQuantity,
+      lpQuantity,
+      derivativeQuantity,
+      netDelta,
+      sourceSymbols: (Array.isArray(item.sourceSymbols) ? item.sourceSymbols : [])
+        .map(asString)
+        .filter((symbol): symbol is string => Boolean(symbol)),
+    }];
+  });
+  const quality = isRecord(payload.dataQuality) ? payload.dataQuality : {};
+
+  return {
+    id,
+    scopeType,
+    timestamp: asString(payload.timestamp) ?? null,
+    deltas,
+    dataQuality: {
+      status: quality.status === "partial" ? "partial" : "complete",
+      warnings: (Array.isArray(quality.warnings) ? quality.warnings : [])
+        .map(asString)
+        .filter((warning): warning is string => Boolean(warning)),
+    },
+  };
+}
+
+function buildAssetDeltasUrl(node: ExplorerTreeNode | null): string | null {
+  if (node?.type === "strategy_group") {
+    return `/api/v1/strategy-groups/${encodeURIComponent(node.entityId)}/asset-deltas`;
+  }
+  if (node?.type === "strategy") {
+    return `/api/v1/strategies/${encodeURIComponent(node.strategyId ?? node.entityId)}/asset-deltas`;
+  }
+  return null;
+}
+
 function readSavedChartMode(): ChartMode {
   try {
     const value = window.localStorage.getItem(CHART_MODE_STORAGE_KEY);
@@ -2347,6 +2422,100 @@ function NodeMetricsTable({ metrics }: { metrics: Metric[] }): JSX.Element {
   );
 }
 
+function AssetDeltasTable({
+  data,
+  error,
+  isLoading,
+}: {
+  data: AssetDeltasResponse | null;
+  error: string | null;
+  isLoading: boolean;
+}): JSX.Element {
+  return (
+    <div className="mt-5 min-w-0">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+        Net asset delta
+      </div>
+      <div className="mt-1 text-xs leading-5 text-slate-500">
+        Account balances + LP assets + signed futures/perps. USD stablecoins are grouped as USD.
+      </div>
+
+      {isLoading ? (
+        <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading asset deltas...
+        </div>
+      ) : error ? (
+        <div className="mt-3 rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+          {error}
+        </div>
+      ) : data && data.deltas.length > 0 ? (
+        <div className="mt-3 min-w-0 overflow-hidden rounded-xl border border-white/10">
+          <table className="w-full table-fixed text-xs">
+            <colgroup>
+              <col className="w-[22%]" />
+              <col className="w-[26%]" />
+              <col className="w-[26%]" />
+              <col className="w-[26%]" />
+            </colgroup>
+            <thead className="bg-slate-950/60 text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+              <tr>
+                <th className="px-2 py-2 text-left">Asset</th>
+                <th className="px-2 py-2 text-right" title="Account balances plus LP token quantities">Held</th>
+                <th className="px-2 py-2 text-right" title="Signed futures and perpetual quantity">Deriv.</th>
+                <th className="px-2 py-2 text-right">Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.deltas.map((delta) => {
+                const heldQuantity = delta.balanceQuantity + delta.lpQuantity;
+                const sourceTitle = delta.sourceSymbols.length > 1
+                  ? `Grouped from ${delta.sourceSymbols.join(", ")}`
+                  : undefined;
+                return (
+                  <tr key={delta.assetSymbol} className="border-t border-white/10">
+                    <td className="px-2 py-2 font-semibold text-slate-200" title={sourceTitle}>{delta.assetSymbol}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-300" title={`Balances: ${formatAssetQuantity(delta.balanceQuantity)}; LP: ${formatAssetQuantity(delta.lpQuantity)}`}>
+                      {formatAssetQuantity(heldQuantity)}
+                    </td>
+                    <td className={cn("px-2 py-2 text-right tabular-nums", delta.derivativeQuantity < 0 ? "text-rose-200" : "text-slate-300")}>
+                      {formatAssetQuantity(delta.derivativeQuantity, true)}
+                    </td>
+                    <td className={cn("px-2 py-2 text-right font-semibold tabular-nums", delta.netDelta < 0 ? "text-rose-200" : delta.netDelta > 0 ? "text-emerald-200" : "text-slate-300")}>
+                      {formatAssetQuantity(delta.netDelta, true)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : data ? (
+        <div className="mt-3 text-xs text-slate-500">No current asset exposure is available for this scope.</div>
+      ) : null}
+
+      {data?.dataQuality.warnings.length ? (
+        <div className="mt-3 rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
+          {data.dataQuality.warnings.join(" ")}
+        </div>
+      ) : null}
+      {data?.timestamp ? (
+        <div className="mt-2 text-[10px] text-slate-600">Latest account state: {formatDateTimeOrNA(data.timestamp)}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatAssetQuantity(value: number, signed = false): string {
+  const absoluteValue = Math.abs(value);
+  const formatted = new Intl.NumberFormat("en-US", absoluteValue !== 0 && absoluteValue < 1
+    ? { maximumSignificantDigits: 7 }
+    : { maximumFractionDigits: 4 }).format(absoluteValue);
+  if (value < 0) return `-${formatted}`;
+  if (signed && value > 0) return `+${formatted}`;
+  return formatted;
+}
+
 const EXPOSURE_COLORS = [
   "bg-cyan-400",
   "bg-violet-400",
@@ -2436,6 +2605,7 @@ export function StrategiesPage(): JSX.Element {
   const [treeNodes, setTreeNodes] = useState<ExplorerTreeNode[]>([]);
   const [treeWarnings, setTreeWarnings] = useState<StructuredWarning[]>([]);
   const [selectedTreeNode, setSelectedTreeNode] = useState<ExplorerTreeNode | null>(null);
+  const [assetDeltas, setAssetDeltas] = useState<AssetDeltasResponse | null>(null);
   const [nodeDetails, setNodeDetails] = useState<ExplorerDetails | null>(null);
   const [historyData, setHistoryData] = useState<ExplorerHistory>(() => createEmptyHistory());
   const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
@@ -2451,6 +2621,7 @@ export function StrategiesPage(): JSX.Element {
   const [isLoadingAdvancedMetrics, setIsLoadingAdvancedMetrics] = useState(false);
   const [isLoadingTree, setIsLoadingTree] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [isLoadingAssetDeltas, setIsLoadingAssetDeltas] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [headerError, setHeaderError] = useState<string | null>(null);
@@ -2458,6 +2629,7 @@ export function StrategiesPage(): JSX.Element {
   const [advancedMetricsError, setAdvancedMetricsError] = useState<string | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [assetDeltasError, setAssetDeltasError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [chartMode, setChartMode] = useState<ChartMode>(() => readSavedChartMode());
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
@@ -2925,6 +3097,45 @@ export function StrategiesPage(): JSX.Element {
   }, [locale, selectedStrategy, selectedTreeNode]);
 
   useEffect(() => {
+    const url = buildAssetDeltasUrl(selectedTreeNode);
+    if (url === null) {
+      setAssetDeltas(null);
+      setAssetDeltasError(null);
+      setIsLoadingAssetDeltas(false);
+      return;
+    }
+
+    let active = true;
+    setAssetDeltas(null);
+    setAssetDeltasError(null);
+    setIsLoadingAssetDeltas(true);
+    fetchJson(url, locale)
+      .then((payload) => {
+        if (!active) return;
+        const normalized = normalizeAssetDeltas(payload);
+        if (normalized === null) {
+          setAssetDeltasError("Asset delta response is unavailable.");
+          return;
+        }
+        setAssetDeltas(normalized);
+      })
+      .catch((requestError: unknown) => {
+        if (!active) return;
+        setAssetDeltas(null);
+        setAssetDeltasError(requestError instanceof ApiRequestError && requestError.responseMessage
+          ? requestError.responseMessage
+          : "Unable to load asset deltas from ANMI API.");
+      })
+      .finally(() => {
+        if (active) setIsLoadingAssetDeltas(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [locale, selectedTreeNode]);
+
+  useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode || !selectedDataset) return;
     let active = true;
     setIsLoadingHistory(true);
@@ -3386,6 +3597,8 @@ export function StrategiesPage(): JSX.Element {
         </section>
 
         <DataExplorer
+          assetDeltas={assetDeltas}
+          assetDeltasError={assetDeltasError}
           details={nodeDetails}
           detailsError={detailsError}
           historyColumns={historyData.columns}
@@ -3398,6 +3611,7 @@ export function StrategiesPage(): JSX.Element {
           globalWarnings={globalTreeWarnings}
           hasHistoryMessageColumn={hasHistoryMessageColumn}
           isLoadingDetails={isLoadingDetails}
+          isLoadingAssetDeltas={isLoadingAssetDeltas}
           isLoadingHistory={isLoadingHistory}
           isLoadingTree={isLoadingTree}
           hasNextHistoryPage={historyPagination.hasNextPage}
@@ -3560,6 +3774,8 @@ function ExplorerNodeSelector({
 }
 
 function DataExplorer({
+  assetDeltas,
+  assetDeltasError,
   details,
   detailsError,
   historyColumns,
@@ -3574,6 +3790,7 @@ function DataExplorer({
   hasNextHistoryPage,
   hasPreviousHistoryPage,
   isLoadingDetails,
+  isLoadingAssetDeltas,
   isLoadingHistory,
   isLoadingTree,
   nodes,
@@ -3587,6 +3804,8 @@ function DataExplorer({
   onHistoryPageSizeChange,
   onSelectNode,
 }: {
+  assetDeltas: AssetDeltasResponse | null;
+  assetDeltasError: string | null;
   details: ExplorerDetails | null;
   detailsError: string | null;
   historyColumns: ExplorerHistoryColumn[];
@@ -3601,6 +3820,7 @@ function DataExplorer({
   hasNextHistoryPage: boolean;
   hasPreviousHistoryPage: boolean;
   isLoadingDetails: boolean;
+  isLoadingAssetDeltas: boolean;
   isLoadingHistory: boolean;
   isLoadingTree: boolean;
   nodes: ExplorerTreeNode[];
@@ -3667,6 +3887,9 @@ function DataExplorer({
               Latest verified values for the selected element.
             </div>
             <NodeMetricsTable metrics={currentNodeMetrics} />
+            {selectedNode?.type === "strategy_group" || selectedNode?.type === "strategy" ? (
+              <AssetDeltasTable data={assetDeltas} error={assetDeltasError} isLoading={isLoadingAssetDeltas} />
+            ) : null}
           </div>
 
           {warningsToShow.length ? (
