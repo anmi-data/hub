@@ -721,6 +721,7 @@ function getDefaultDatasetForNode(node: ExplorerNode): string {
       return "balances";
     case "position_group":
       if (node.protocolType === "lp") return "positions_lp";
+      if (node.protocolType === "vault") return "positions_vaults";
       if (node.protocolType === "futures" || node.protocolType === "perp") return "positions_futures";
       return "positions_generic";
     case "strategy_group":
@@ -824,7 +825,7 @@ function getSummaryPriorityKeys(nodeType?: string, protocolType?: string): strin
       "leverage", "unrealizedPnlUsd", "realizedPnlUsd", "fundingUsd", "accountWeight", "marginUsage", "updatedAt",
     ];
   }
-  if (nodeType === "position_group" && protocolType === "lp") {
+  if (nodeType === "position_group" && (protocolType === "lp" || protocolType === "vault")) {
     return ["lpNavUsd", "feesUsd", "unclaimedFeesUsd", "inRange", "rangeUtilization", "feesYield", "lpPnlUsd", "impermanentRisk", "updatedAt"];
   }
   if (nodeType === "position_group" && (protocolType === "futures" || protocolType === "perp")) {
@@ -1396,6 +1397,7 @@ function formatDatasetLabel(value: string): string {
     balances: "Balances",
     positions_generic: "Generic positions",
     positions_lp: "LP positions",
+    positions_vaults: "Managed LP vaults",
     positions_futures: "Futures",
     hedge: "Hedge",
     errors: "Errors",
@@ -1444,7 +1446,7 @@ function formatExplorerNodeKind(node: ExplorerTreeNode): string {
   if (type === "account") return "Account";
   if (type === "balance_group") return "Balance";
   if (type === "lp_position") return "Liquidity";
-  if (type === "position_group" && protocolType === "lp") return "Liquidity";
+  if (type === "position_group" && (protocolType === "lp" || protocolType === "vault")) return "Liquidity";
   if (type === "position_group") return "Positions";
   if (type === "futures_position") return "Positions";
   if (type === "generic_position") return "Positions";
@@ -1716,7 +1718,7 @@ function buildExposureMix(details: ExplorerDetails | null, selectedNode?: Explor
   if (type === "strategy_group") return buildStrategyGroupExposureMix(selectedNode);
   if (type === "strategy") return buildStrategyExposureMix(details, selectedNode);
   if (type === "account") return buildAccountExposureMix(details, selectedNode);
-  if (type === "position_group" && protocolType === "lp") return buildLpPoolExposureMix(details, selectedNode);
+  if (type === "position_group" && (protocolType === "lp" || protocolType === "vault")) return buildLpPoolExposureMix(details, selectedNode);
   if (type === "position_group" && (protocolType === "futures" || protocolType === "perp")) return buildPerpMarginExposureMix(details, selectedNode);
   if (type === "balance_group") return buildAssetsExposureMix(details, selectedNode);
   return [];
