@@ -2725,10 +2725,13 @@ export function StrategiesPage(): JSX.Element {
   const selectedNodeKey = selectedTreeNode?.uiKey ?? null;
   const selectedNodeWarnings = useMemo(() => {
     if (!selectedTreeNode) return [];
-    return treeWarnings.filter((warning) => (
-      warning.nodeId === selectedTreeNode.id ||
-      warning.entityId === selectedTreeNode.entityId
-    ));
+    return treeWarnings.filter((warning) => {
+      if (warning.nodeId) {
+        return warning.nodeId === selectedTreeNode.id;
+      }
+
+      return warning.entityId === selectedTreeNode.entityId;
+    });
   }, [selectedTreeNode, treeWarnings]);
   const globalTreeWarnings = useMemo(() => treeWarnings.filter((warning) => !warning.nodeId && !warning.entityId), [treeWarnings]);
   const filteredStrategies = useMemo(() => {
