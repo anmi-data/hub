@@ -1796,11 +1796,14 @@ function isMessageField(key: string): boolean {
 }
 
 function getRowStatus(row: HistoryRecord): string | null {
+  if (row.hasIssue === true || row.has_issue === true || row.hasIssue === 1 || row.has_issue === 1) {
+    return "issue";
+  }
   return asString(row.status) ?? asString(row.dataStatus) ?? asString(row.quality) ?? asString(row.dataQuality) ?? asString(row.snapshotStatus) ?? null;
 }
 
 function getRowMessage(row: HistoryRecord): string | null {
-  for (const key of ["error", "errorMessage", "error_message", "message", "warning", "warningMessage", "reason", "statusMessage", "status_message"]) {
+  for (const key of ["issueMessage", "issue_message", "error", "errorMessage", "error_message", "message", "warning", "warningMessage", "reason", "statusMessage", "status_message"]) {
     const value = row[key];
     const formatted = typeof value === "string" ? value.trim() : value === null || value === undefined ? "" : formatValue(value);
     if (formatted) return formatted;
@@ -1812,7 +1815,7 @@ function getStatusTone(status: string | null | undefined): "good" | "warning" | 
   const normalized = String(status ?? "").toLowerCase();
   if (["complete", "success", "ok"].includes(normalized)) return "good";
   if (["partial", "warning", "stale"].includes(normalized)) return "warning";
-  if (["error", "failed", "invalid", "missing"].includes(normalized)) return "risk";
+  if (["issue", "error", "failed", "invalid", "missing"].includes(normalized)) return "risk";
   return "default";
 }
 
