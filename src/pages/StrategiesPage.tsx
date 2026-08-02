@@ -3772,7 +3772,13 @@ function ExplorerNodeSelector({
                       {formatExplorerNodeKind(node)}{parentPath ? ` / ${parentPath}` : ""}
                     </span>
                   </span>
-                  {node.hasCollectionError ? <StatusBadge label="Error" tone="warning" title={node.latestErrorMessage ?? undefined} /> : null}
+                  {node.hasCollectionError ? (
+                    <StatusBadge
+                      label={node.collectionStatus === "partial" ? "Partial" : "Error"}
+                      tone="warning"
+                      title={node.latestErrorMessage ?? undefined}
+                    />
+                  ) : null}
                 </button>
               );
             })}
