@@ -722,6 +722,7 @@ function getDefaultDatasetForNode(node: ExplorerNode): string {
     case "position_group":
       if (node.protocolType === "lp") return "positions_lp";
       if (node.protocolType === "vault") return "positions_vaults";
+      if (node.protocolType === "prediction") return "positions_prediction";
       if (node.protocolType === "futures" || node.protocolType === "perp") return "positions_futures";
       return "positions_generic";
     case "strategy_group":
@@ -830,6 +831,9 @@ function getSummaryPriorityKeys(nodeType?: string, protocolType?: string): strin
   }
   if (nodeType === "position_group" && (protocolType === "futures" || protocolType === "perp")) {
     return ["notionalUsd", "marginUsd", "unrealizedPnlUsd", "realizedPnlUsd", "pnlPct", "fundingUsd", "fundingRate", "liquidationPrice", "distanceToLiquidation", "updatedAt"];
+  }
+  if (nodeType === "position_group" && protocolType === "prediction") {
+    return ["predictionNavUsd", "navUsd", "weight", "updatedAt"];
   }
   if (nodeType === "balance_group") {
     return ["aumUsd", "stablecoinShare", "volatileAssetExposure", "updatedAt"];
@@ -1398,6 +1402,7 @@ function formatDatasetLabel(value: string): string {
     positions_generic: "Generic positions",
     positions_lp: "LP positions",
     positions_vaults: "Managed LP vaults",
+    positions_prediction: "Prediction positions",
     positions_futures: "Futures",
     hedge: "Hedge",
     errors: "Errors",
