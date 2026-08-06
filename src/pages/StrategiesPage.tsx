@@ -497,13 +497,13 @@ function normalizeStrategyRecord(
       apiGroupPresentation?.name ??
       localizedPresentation.name ??
       id,
-    change1dPct: nullableNumber(item.change1dPct),
-    change7dPct: nullableNumber(item.change7dPct),
-    change1yPct: nullableNumber(item.change1yPct),
-    changeYtdPct: nullableNumber(item.changeYtdPct),
-    apy30dPct: nullableNumber(item.apy30dPct),
-    apyAllPct: nullableNumber(item.apyAllPct),
-    dailyVar95Pct: nullableNumber(item.dailyVar95Pct),
+    change1dPct: firstNumber(metrics.change1dPct, metrics.change1d_pct, item.change1dPct, item.change_1d_pct),
+    change7dPct: firstNumber(metrics.change7dPct, metrics.change7d_pct, item.change7dPct, item.change_7d_pct),
+    change1yPct: firstNumber(metrics.change1yPct, metrics.change1y_pct, item.change1yPct, item.change_1y_pct),
+    changeYtdPct: firstNumber(metrics.changeYtdPct, metrics.change_ytd_pct, item.changeYtdPct, item.change_ytd_pct),
+    apy30dPct: firstNumber(metrics.apy30dPct, metrics.apy_30d_pct, item.apy30dPct, item.apy_30d_pct),
+    apyAllPct: firstNumber(metrics.apyAllPct, metrics.apy_all_pct, item.apyAllPct, item.apy_all_pct),
+    dailyVar95Pct: firstNumber(metrics.dailyVar95Pct, metrics.daily_var_95_pct, item.dailyVar95Pct, item.daily_var_95_pct),
     lifetimeDays: nullableNumber(item.lifetimeDays),
   };
   const description =
@@ -524,9 +524,23 @@ function normalizeStrategyRecord(
 
 function normalizeStrategies(strategiesPayload: unknown, groupsPayload: unknown, locale: Locale): StrategySummary[] {
   const groupPresentations = normalizeStrategyGroupPresentations(groupsPayload, locale);
-  return asArray(strategiesPayload)
+  const normalizedStrategies = asArray(strategiesPayload)
     .map((item) => normalizeStrategyRecord(item, locale, groupPresentations))
     .filter((item): item is StrategySummary => Boolean(item));
+  const representedGroupIds = new Set(normalizedStrategies.map((strategy) => strategy.groupId));
+  const standaloneGroups = asArray(groupsPayload)
+    .map((item) => normalizeStrategyRecord(item, locale, groupPresentations))
+    .filter(
+      (item): item is StrategySummary =>
+        item !== undefined && !representedGroupIds.has(item.groupId)
+    )
+    .sort((left, right) => {
+      if (left.groupId === "total") return -1;
+      if (right.groupId === "total") return 1;
+      return left.name.localeCompare(right.name, locale);
+    });
+
+  return [...standaloneGroups, ...normalizedStrategies];
 }
 
 function normalizeGroupHeader(raw: unknown, locale: Locale, fallback?: StrategySummary): StrategyGroupHeader {
