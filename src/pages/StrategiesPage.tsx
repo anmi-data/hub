@@ -152,6 +152,7 @@ type ExplorerHistoryColumn = {
   type: "string" | "number" | "boolean" | "datetime" | string;
   format?: "text" | "number" | "currency" | "percent" | "datetime" | "boolean" | "address" | "tags" | string;
   unit?: "USD" | string;
+  pairedKey?: string;
 };
 
 type ExplorerHistoryPagination = {
@@ -1050,6 +1051,43 @@ function normalizeHistoryColumn(item: unknown): ExplorerHistoryColumn | undefine
   };
 }
 
+const LP_MAX_COLUMN_LABEL: Record<Locale, string> = {
+  en: "max",
+  ru: "макс.",
+  fr: "max.",
+  zh: "最大值",
+};
+
+function combineLpAmountColumns(columns: ExplorerHistoryColumn[], locale: Locale): ExplorerHistoryColumn[] {
+  const columnKeys = new Set(columns.map((column) => column.key));
+  const maxByAmount: Record<string, string> = {
+    amount0: "maxAmount0",
+    amount1: "maxAmount1",
+  };
+  const amountByMax: Record<string, string> = {
+    maxAmount0: "amount0",
+    maxAmount1: "amount1",
+  };
+
+  return columns.flatMap((column) => {
+    const amountKey = amountByMax[column.key];
+    if (amountKey && columnKeys.has(amountKey)) {
+      return [];
+    }
+
+    const pairedKey = maxByAmount[column.key];
+    if (!pairedKey || !columnKeys.has(pairedKey)) {
+      return [column];
+    }
+
+    return [{
+      ...column,
+      label: `${column.label} / ${LP_MAX_COLUMN_LABEL[locale]}`,
+      pairedKey,
+    }];
+  });
+}
+
 function unwrapHistoryPayload(payload: unknown): Record<string, unknown> {
   if (!isRecord(payload)) return {};
   return isRecord(payload.data) ? payload.data : payload;
@@ -1060,6 +1098,7 @@ function normalizeHistory(
   fallbackPage: number,
   fallbackPageSize: (typeof HISTORY_PAGE_SIZES)[number],
   fallbackSearch: string,
+  locale: Locale,
 ): ExplorerHistory {
   const source = unwrapHistoryPayload(payload);
   const rows = (Array.isArray(source.rows) ? source.rows : Array.isArray(source.items) ? source.items : Array.isArray(source.records) ? source.records : Array.isArray(source.history) ? source.history : [])
@@ -1068,7 +1107,9 @@ function normalizeHistory(
   const normalizedColumns = (Array.isArray(source.columns) ? source.columns : [])
     .map(normalizeHistoryColumn)
     .filter((column): column is ExplorerHistoryColumn => Boolean(column));
-  const columns = normalizedColumns;
+  const columns = asString(source.dataset) === "positions_lp"
+    ? combineLpAmountColumns(normalizedColumns, locale)
+    : normalizedColumns;
   const pagination = isRecord(source.pagination) ? source.pagination : {};
   const page = firstNumber(pagination.page) ?? fallbackPage;
   const pageSize = firstNumber(pagination.pageSize, pagination.page_size) ?? fallbackPageSize;
@@ -1244,6 +1285,11 @@ function formatNumber(value: number | null | undefined): string {
 function formatNumberOrNA(value: number | null | undefined, digits = 4): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
   return value.toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+function formatPriceRatioOrNA(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+  return value.toLocaleString("en-US", { maximumSignificantDigits: 10 });
 }
 
 function formatAdvancedNumber(value: number | null | undefined, digits = 2): string {
@@ -3200,7 +3246,7 @@ export function StrategiesPage(): JSX.Element {
         if (import.meta.env.DEV) {
           console.debug("Explorer history raw response", payload);
         }
-        setHistoryData(normalizeHistory(payload, historyPage, historyPageSize, historySearch));
+        setHistoryData(normalizeHistory(payload, historyPage, historyPageSize, historySearch, locale));
       })
       .catch(() => {
         if (active) {
@@ -4100,11 +4146,11 @@ function StatusIcon({ status }: { status: string | null }): JSX.Element {
   return <Circle className={className} aria-label={status ?? "Unknown"} />;
 }
 
-function formatHistoryCell(column: ExplorerHistoryColumn, row: HistoryRecord): string {
-  const value = row[column.key];
+function formatHistoryCellValue(column: ExplorerHistoryColumn, value: unknown): string {
   if (value === null || value === undefined) return isStrategyContractMetricField(column.key) ? "—" : formatEmptyValue();
 
   const normalizedFormat = column.format?.trim().toLowerCase();
+  if (column.key === "priceLower" || column.key === "priceUpper") return formatPriceRatioOrNA(asNumber(value));
   if (normalizedFormat === "currency" || column.unit === "USD") return formatUsdOrNA(asNumber(value));
   if (normalizedFormat === "percent") {
     const numericValue = asNumber(value);
@@ -4120,6 +4166,14 @@ function formatHistoryCell(column: ExplorerHistoryColumn, row: HistoryRecord): s
   if (normalizedFormat === "number" || column.type === "number") return formatNumberOrNA(asNumber(value));
 
   return formatFieldValue(column.key, value);
+}
+
+function formatHistoryCell(column: ExplorerHistoryColumn, row: HistoryRecord): string {
+  const value = formatHistoryCellValue(column, row[column.key]);
+  if (!column.pairedKey) return value;
+
+  const pairedColumn = { ...column, key: column.pairedKey, pairedKey: undefined };
+  return `${value} / ${formatHistoryCellValue(pairedColumn, row[column.pairedKey])}`;
 }
 
 function HistoryTable({
