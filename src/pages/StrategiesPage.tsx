@@ -221,6 +221,8 @@ type AssetDeltaItem = {
   lpQuantity: number;
   derivativeQuantity: number;
   netDelta: number;
+  priceUsd: number | null;
+  netDeltaUsd: number | null;
   sourceSymbols: string[];
 };
 
@@ -2038,6 +2040,8 @@ function normalizeAssetDeltas(payload: unknown): AssetDeltasResponse | null {
       lpQuantity,
       derivativeQuantity,
       netDelta,
+      priceUsd: nullableNumber(item.priceUsd),
+      netDeltaUsd: nullableNumber(item.netDeltaUsd),
       sourceSymbols: (Array.isArray(item.sourceSymbols) ? item.sourceSymbols : [])
         .map(asString)
         .filter((symbol): symbol is string => Boolean(symbol)),
@@ -2477,36 +2481,42 @@ function AssetDeltasTable({
         <div className="mt-3 min-w-0 overflow-hidden rounded-xl border border-white/10">
           <table className="w-full table-fixed text-xs">
             <colgroup>
-              <col className="w-[22%]" />
-              <col className="w-[26%]" />
-              <col className="w-[26%]" />
-              <col className="w-[26%]" />
+              <col className="w-[28%]" />
+              <col className="w-[36%]" />
+              <col className="w-[36%]" />
             </colgroup>
             <thead className="bg-slate-950/60 text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-500">
               <tr>
                 <th className="px-2 py-2 text-left">Asset</th>
-                <th className="px-2 py-2 text-right" title="Account balances plus LP token quantities">Held</th>
-                <th className="px-2 py-2 text-right" title="Signed futures and perpetual quantity">Deriv.</th>
-                <th className="px-2 py-2 text-right">Net</th>
+                <th className="px-2 py-2 text-right" title="Account balances plus LP assets plus signed derivatives">Delta</th>
+                <th className="px-2 py-2 text-right" title="Net asset delta converted at the latest available USD price">Delta, USD</th>
               </tr>
             </thead>
             <tbody>
               {data.deltas.map((delta) => {
-                const heldQuantity = delta.balanceQuantity + delta.lpQuantity;
                 const sourceTitle = delta.sourceSymbols.length > 1
                   ? `Grouped from ${delta.sourceSymbols.join(", ")}`
                   : undefined;
                 return (
                   <tr key={delta.assetSymbol} className="border-t border-white/10">
                     <td className="px-2 py-2 font-semibold text-slate-200" title={sourceTitle}>{delta.assetSymbol}</td>
-                    <td className="px-2 py-2 text-right tabular-nums text-slate-300" title={`Balances: ${formatAssetQuantity(delta.balanceQuantity)}; LP: ${formatAssetQuantity(delta.lpQuantity)}`}>
-                      {formatAssetQuantity(heldQuantity)}
-                    </td>
-                    <td className={cn("px-2 py-2 text-right tabular-nums", delta.derivativeQuantity < 0 ? "text-rose-200" : "text-slate-300")}>
-                      {formatAssetQuantity(delta.derivativeQuantity, true)}
-                    </td>
                     <td className={cn("px-2 py-2 text-right font-semibold tabular-nums", delta.netDelta < 0 ? "text-rose-200" : delta.netDelta > 0 ? "text-emerald-200" : "text-slate-300")}>
                       {formatAssetQuantity(delta.netDelta, true)}
+                    </td>
+                    <td
+                      className={cn(
+                        "px-2 py-2 text-right font-semibold tabular-nums",
+                        delta.netDeltaUsd === null
+                          ? "text-slate-500"
+                          : delta.netDeltaUsd < 0
+                            ? "text-rose-200"
+                            : delta.netDeltaUsd > 0
+                              ? "text-emerald-200"
+                              : "text-slate-300",
+                      )}
+                      title={delta.priceUsd === null ? undefined : `Price: ${formatUsdOrNA(delta.priceUsd)}`}
+                    >
+                      {formatSignedUsdOrNA(delta.netDeltaUsd)}
                     </td>
                   </tr>
                 );
@@ -2538,6 +2548,11 @@ function formatAssetQuantity(value: number, signed = false): string {
   if (value < 0) return `-${formatted}`;
   if (signed && value > 0) return `+${formatted}`;
   return formatted;
+}
+
+function formatSignedUsdOrNA(value: number | null): string {
+  const formatted = formatUsdOrNA(value);
+  return value !== null && value > 0 ? `+${formatted}` : formatted;
 }
 
 const EXPOSURE_COLORS = [
