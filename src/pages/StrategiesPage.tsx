@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle, ChevronDown, Circle, LineChart, Loader2, ShieldCheck, TrendingUp, X, XCircle } from "lucide-react";
 import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/StrategyTimeSeriesChart";
-import { getLocalizedCategory, getLocalizedText, getStrategyPresentation, localizedPath, type Locale, useLocale } from "../i18n/locale";
+import { getLocalizedCategory, getLocalizedText, localizedPath, type Locale, useLocale } from "../i18n/locale";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
 
@@ -462,88 +462,45 @@ function getChartPointValue(
   return rawValue ?? normalizedValue ?? null;
 }
 
-type StrategyGroupPresentation = {
-  name?: string;
-  description?: string;
-};
-
-function normalizeStrategyGroupPresentations(payload: unknown, locale: Locale): Map<string, StrategyGroupPresentation> {
-  const presentations = new Map<string, StrategyGroupPresentation>();
-  asArray(payload).forEach((item) => {
-    if (!isRecord(item)) return;
-    const id = asString(item.id) ?? asString(item.groupId) ?? asString(item.group_id);
-    if (!id) return;
-    presentations.set(id, {
-      name: getLocalizedText(item.name ?? item.group_name_json, locale),
-      description: getLocalizedText(item.description ?? item.group_description_json, locale),
-    });
-  });
-  return presentations;
-}
-
-function normalizeStrategyRecord(
-  item: unknown,
-  locale: Locale,
-  groupPresentations: Map<string, StrategyGroupPresentation>,
-): StrategySummary | undefined {
-  if (!isRecord(item)) return undefined;
-  const metrics = isRecord(item.metrics) ? item.metrics : {};
-  const id = asString(item.group_id) ?? asString(item.groupId) ?? asString(item.id);
-  if (!id) return undefined;
-  const localizedPresentation = getStrategyPresentation(id, locale);
-  const apiGroupPresentation = groupPresentations.get(localizedPresentation.groupId);
-  const strategy: StrategySummary = {
-    id,
-    groupId: localizedPresentation.groupId,
-    name:
-      getLocalizedText(item.group_name_json ?? item.displayName ?? item.name ?? item.label, locale) ??
-      apiGroupPresentation?.name ??
-      localizedPresentation.name ??
+function normalizePreparedStrategies(payload: unknown): StrategySummary[] {
+  if (!isRecord(payload) || !Array.isArray(payload.strategies)) return [];
+  return payload.strategies.filter(isRecord).map((item): StrategySummary | undefined => {
+    const id = asString(item.id);
+    const groupId = asString(item.groupId);
+    const name = asString(item.name);
+    if (!id || !groupId || !name) return undefined;
+    return {
       id,
-    change1dPct: firstNumber(metrics.change1dPct, metrics.change1d_pct, item.change1dPct, item.change_1d_pct),
-    change7dPct: firstNumber(metrics.change7dPct, metrics.change7d_pct, item.change7dPct, item.change_7d_pct),
-    change1yPct: firstNumber(metrics.change1yPct, metrics.change1y_pct, item.change1yPct, item.change_1y_pct),
-    changeYtdPct: firstNumber(metrics.changeYtdPct, metrics.change_ytd_pct, item.changeYtdPct, item.change_ytd_pct),
-    apy30dPct: firstNumber(metrics.apy30dPct, metrics.apy_30d_pct, item.apy30dPct, item.apy_30d_pct),
-    apyAllPct: firstNumber(metrics.apyAllPct, metrics.apy_all_pct, item.apyAllPct, item.apy_all_pct),
-    dailyVar95Pct: firstNumber(metrics.dailyVar95Pct, metrics.daily_var_95_pct, item.dailyVar95Pct, item.daily_var_95_pct),
-    lifetimeDays: nullableNumber(item.lifetimeDays),
-  };
-  const description =
-    getLocalizedText(item.group_description_json ?? item.description, locale) ??
-    apiGroupPresentation?.description ??
-    localizedPresentation.description;
-  const status = asString(item.status);
-  if (description) strategy.description = description;
-  if (status) strategy.status = status;
-  strategy.apy = firstNumber(metrics.apyPct, metrics.apy, metrics.cagrPct, metrics.cagr, item.apyPct, item.cagrPct, item.cagr, item.apy, item.total_return, item.totalReturn);
-  strategy.maxDrawdown = firstNumber(metrics.maxDrawdownPct, metrics.maxDrawdown, metrics.max_drawdown, item.maxDrawdownPct, item.max_drawdown, item.maxDrawdown);
-  strategy.currentDrawdown = firstNumber(metrics.currentDrawdownPct, metrics.currentDrawdown, metrics.current_drawdown, item.currentDrawdownPct, item.current_drawdown, item.currentDrawdown);
-  strategy.unitPrice = firstNumber(item.unit_price, item.unitPrice);
-  strategy.navUsd = firstNumber(item.nav_usd, item.navUsd);
-  strategy.updatedAt = asString(item.updated_at) ?? asString(item.updatedAt) ?? asString(item.latestSnapshotAt) ?? asString(item.latest_snapshot_at) ?? asString(item.snapshot_at) ?? asString(item.timestamp) ?? null;
-  return strategy;
+      groupId,
+      name,
+      description: asString(item.description),
+      status: asString(item.status),
+      apy: nullableNumber(item.apy),
+      change1dPct: nullableNumber(item.change1dPct),
+      change7dPct: nullableNumber(item.change7dPct),
+      change1yPct: nullableNumber(item.change1yPct),
+      changeYtdPct: nullableNumber(item.changeYtdPct),
+      apy30dPct: nullableNumber(item.apy30dPct),
+      apyAllPct: nullableNumber(item.apyAllPct),
+      dailyVar95Pct: nullableNumber(item.dailyVar95Pct),
+      lifetimeDays: nullableNumber(item.lifetimeDays),
+      maxDrawdown: nullableNumber(item.maxDrawdown),
+      currentDrawdown: nullableNumber(item.currentDrawdown),
+      unitPrice: nullableNumber(item.unitPrice),
+      navUsd: nullableNumber(item.navUsd),
+      updatedAt: asString(item.updatedAt) ?? null,
+    };
+  }).filter((item): item is StrategySummary => item !== undefined);
 }
 
-function normalizeStrategies(strategiesPayload: unknown, groupsPayload: unknown, locale: Locale): StrategySummary[] {
-  const groupPresentations = normalizeStrategyGroupPresentations(groupsPayload, locale);
-  const normalizedStrategies = asArray(strategiesPayload)
-    .map((item) => normalizeStrategyRecord(item, locale, groupPresentations))
-    .filter((item): item is StrategySummary => Boolean(item));
-  const representedGroupIds = new Set(normalizedStrategies.map((strategy) => strategy.groupId));
-  const standaloneGroups = asArray(groupsPayload)
-    .map((item) => normalizeStrategyRecord(item, locale, groupPresentations))
-    .filter(
-      (item): item is StrategySummary =>
-        item !== undefined && !representedGroupIds.has(item.groupId)
-    )
-    .sort((left, right) => {
-      if (left.groupId === "total") return -1;
-      if (right.groupId === "total") return 1;
-      return left.name.localeCompare(right.name, locale);
-    });
-
-  return [...standaloneGroups, ...normalizedStrategies];
+function preparedCollectionError(payload: unknown): string | null {
+  if (!isRecord(payload) || !Array.isArray(payload.collectionErrors) || payload.collectionErrors.length === 0) return null;
+  const errors = payload.collectionErrors.filter(isRecord).map((item) => {
+    const accountId = asString(item.accountId) ?? "account";
+    const message = asString(item.message) ?? "collection failed";
+    return `${accountId}: ${message}`;
+  });
+  return errors.length > 0 ? errors.join("; ") : null;
 }
 
 function normalizeGroupHeader(raw: unknown, locale: Locale, fallback?: StrategySummary): StrategyGroupHeader {
@@ -2746,15 +2703,12 @@ export function StrategiesPage(): JSX.Element {
   useEffect(() => {
     let active = true;
     setIsLoadingStrategies(true);
-    Promise.all([
-      fetchJson("/api/v1/strategies", locale),
-      fetchJson("/api/v1/strategy-groups", locale),
-    ])
-      .then(([strategiesPayload, groupsPayload]) => {
+    fetchJson("/api/v1/display/strategies", locale)
+      .then((payload) => {
         if (!active) return;
-        const normalized = normalizeStrategies(strategiesPayload, groupsPayload, locale);
+        const normalized = normalizePreparedStrategies(payload);
         setStrategies(normalized);
-        setError(normalized.length === 0 ? "No strategies were returned by the API." : null);
+        setError(preparedCollectionError(payload) ?? (normalized.length === 0 ? "No strategies were returned by the API." : null));
       })
       .catch(() => {
         if (!active) return;
