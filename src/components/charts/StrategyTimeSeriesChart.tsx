@@ -232,7 +232,12 @@ export function StrategyTimeSeriesChart({
     primarySeriesRef.current?.setData(primaryData);
 
     if (primaryData.length > 0) {
-      chartRef.current?.timeScale().fitContent();
+      const latestTime = primaryData[primaryData.length - 1].time as UTCTimestamp;
+      // Focus on the latest week of strategy data; retain all points for panning.
+      chartRef.current?.timeScale().setVisibleRange({
+        from: toSeriesTime(latestTime - 7 * 24 * 60 * 60),
+        to: latestTime,
+      });
     }
   }, [loading, primaryData, primarySignature]);
 

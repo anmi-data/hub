@@ -54,6 +54,8 @@ type StrategyGroupHeader = {
   unitPrice?: number | null;
   navUsd?: number | null;
   totalReturn?: number | null;
+  netReturnUsd: number | null;
+  netReturnPct: number | null;
   apy?: number | null;
   change1dPct: number | null;
   change7dPct: number | null;
@@ -524,6 +526,8 @@ function normalizeGroupHeader(raw: unknown, locale: Locale, fallback?: StrategyS
     unitPrice: firstNumber(summary.unitPrice, summary.unit_price, group.unitPrice, group.unit_price, root.unitPrice, root.unit_price, fallback?.unitPrice),
     navUsd: firstNumber(summary.navUsd, summary.nav_usd, group.navUsd, group.nav_usd, root.navUsd, root.nav_usd, fallback?.navUsd),
     totalReturn: firstNumber(metrics.totalReturnPct, metrics.totalReturn, metrics.total_return, root.totalReturnPct, root.totalReturn, root.total_return),
+    netReturnUsd: nullableNumber(metrics.netReturnUsd),
+    netReturnPct: nullableNumber(metrics.netReturnPct),
     apy: firstNumber(metrics.apyPct, metrics.apy, root.apyPct, root.apy, fallback?.apy),
     change1dPct: nullableNumber(metrics.change1dPct),
     change7dPct: nullableNumber(metrics.change7dPct),
@@ -2056,7 +2060,11 @@ function normalizeAssetDeltas(payload: unknown): AssetDeltasResponse | null {
     id,
     scopeType,
     timestamp: asString(payload.timestamp) ?? null,
-    deltas,
+    deltas: deltas.sort((a, b) => {
+      if (a.netDeltaUsd === null && b.netDeltaUsd !== null) return 1;
+      if (b.netDeltaUsd === null && a.netDeltaUsd !== null) return -1;
+      return (b.netDeltaUsd ?? 0) - (a.netDeltaUsd ?? 0) || a.assetSymbol.localeCompare(b.assetSymbol);
+    }),
     dataQuality: {
       status: quality.status === "partial" ? "partial" : "complete",
       warnings: (Array.isArray(quality.warnings) ? quality.warnings : [])
@@ -2820,7 +2828,11 @@ export function StrategiesPage(): JSX.Element {
     });
     const metrics: Metric[] = [
       { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
-      { label: "Net Return", value: formatPercentOrNA(headerStrategy?.totalReturn), hint: "Total return" },
+      {
+        label: "Net Return",
+        value: formatPercentPointsOrDash(headerStrategy?.netReturnPct),
+        hint: `Net profit ${formatSignedUsdOrNA(headerStrategy?.netReturnUsd ?? null)} / current AUM. Deposits and withdrawals excluded from profit.`,
+      },
       ...contractMetrics,
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
       { label: "Volatility", value: formatPercentOrNA(headerStrategy?.volatility ?? headerStrategy?.volatilityAnnualized), hint: "Annualized volatility" },
