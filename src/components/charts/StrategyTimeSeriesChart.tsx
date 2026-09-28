@@ -233,9 +233,9 @@ export function StrategyTimeSeriesChart({
 
     if (primaryData.length > 0) {
       const latestTime = primaryData[primaryData.length - 1].time as UTCTimestamp;
-      // Focus on the latest week of strategy data; retain all points for panning.
+      // Focus on the latest 30 days of strategy data; retain all points for panning.
       chartRef.current?.timeScale().setVisibleRange({
-        from: toSeriesTime(latestTime - 7 * 24 * 60 * 60),
+        from: toSeriesTime(latestTime - 30 * 24 * 60 * 60),
         to: latestTime,
       });
     }
