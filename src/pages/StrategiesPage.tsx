@@ -2063,7 +2063,7 @@ function normalizeAssetDeltas(payload: unknown): AssetDeltasResponse | null {
     deltas: deltas.sort((a, b) => {
       if (a.netDeltaUsd === null && b.netDeltaUsd !== null) return 1;
       if (b.netDeltaUsd === null && a.netDeltaUsd !== null) return -1;
-      return (b.netDeltaUsd ?? 0) - (a.netDeltaUsd ?? 0) || a.assetSymbol.localeCompare(b.assetSymbol);
+      return Math.abs(b.netDeltaUsd ?? 0) - Math.abs(a.netDeltaUsd ?? 0) || a.assetSymbol.localeCompare(b.assetSymbol);
     }),
     dataQuality: {
       status: quality.status === "partial" ? "partial" : "complete",
