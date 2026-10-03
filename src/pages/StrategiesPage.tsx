@@ -1836,6 +1836,11 @@ function getRowMessage(row: HistoryRecord): string | null {
     const formatted = typeof value === "string" ? value.trim() : value === null || value === undefined ? "" : formatValue(value);
     if (formatted) return formatted;
   }
+  const status = getRowStatus(row)?.trim().toLowerCase();
+  if (status === "partial") return "Incomplete snapshot: some data is unavailable.";
+  if (["issue", "error", "failed", "invalid", "missing"].includes(status ?? "")) {
+    return "Snapshot has an error; details are unavailable.";
+  }
   return null;
 }
 
@@ -2662,6 +2667,7 @@ export function StrategiesPage(): JSX.Element {
   const [historySearchInput, setHistorySearchInput] = useState("");
   const [historySearch, setHistorySearch] = useState("");
   const [historyPage, setHistoryPage] = useState(1);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
   const [historyPageSize, setHistoryPageSize] = useState<(typeof HISTORY_PAGE_SIZES)[number]>(DEFAULT_HISTORY_PAGE_SIZE);
   const [isLoadingStrategies, setIsLoadingStrategies] = useState(true);
   const [isLoadingBenchmarks, setIsLoadingBenchmarks] = useState(true);
@@ -3227,7 +3233,19 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [historyPage, historyPageSize, historySearch, locale, selectedDataset, selectedStrategy, selectedTreeNode]);
+  }, [historyPage, historyPageSize, historySearch, historyRefresh, locale, selectedDataset, selectedStrategy, selectedTreeNode]);
+
+  useEffect(() => {
+    const refreshHistory = (): void => {
+      if (document.visibilityState === "visible") setHistoryRefresh((value) => value + 1);
+    };
+    const interval = window.setInterval(refreshHistory, 60_000);
+    document.addEventListener("visibilitychange", refreshHistory);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshHistory);
+    };
+  }, []);
 
   const analytics = useMemo(() => {
     const metric = chartMode === "nav_usd" ? "nav_usd" : "unit_price";
@@ -4167,7 +4185,11 @@ function HistoryTable({
             const message = getRowMessage(row);
             const tone = getStatusTone(status);
             return (
-              <tr key={index} className="border-b border-white/[0.06] text-slate-300 hover:bg-white/[0.025]">
+              <tr key={index} className={cn(
+                "border-b border-white/[0.06] text-slate-300 hover:bg-white/[0.025]",
+                tone === "risk" ? "bg-rose-500/10" : null,
+                tone === "warning" ? "bg-amber-500/10" : null,
+              )}>
                 <td className="px-3 py-3" title={status ?? "Unknown"}>
                   <StatusIcon status={status} />
                 </td>
