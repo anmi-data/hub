@@ -3753,18 +3753,9 @@ function ExplorerNodeSelector({
   onSelectNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const selectedKey = selectedNode?.uiKey ?? null;
   const selectedType = selectedNode ? formatExplorerNodeKind(selectedNode) : "Select node";
-  const normalizedSearch = search.trim().toLowerCase();
-  const filteredNodes = normalizedSearch
-    ? nodes.filter((node) => (
-        node.label.toLowerCase().includes(normalizedSearch) ||
-        node.pathLabel.toLowerCase().includes(normalizedSearch) ||
-        formatExplorerNodeKind(node).toLowerCase().includes(normalizedSearch)
-      ))
-    : nodes;
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -3807,17 +3798,8 @@ function ExplorerNodeSelector({
 
       {isOpen ? (
         <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-white/10 bg-slate-950 shadow-2xl shadow-black/60">
-          <div className="border-b border-white/10 p-3">
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search nodes..."
-              autoFocus
-              className="h-9 w-full rounded-lg border border-white/10 bg-slate-900 px-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300/40"
-            />
-          </div>
           <div className="max-h-80 overflow-y-auto p-1">
-            {filteredNodes.map((node) => {
+            {nodes.map((node) => {
               const selected = node.uiKey === selectedKey;
               const parentPath = node.pathLabel.split(" / ").slice(0, -1).join(" / ");
 
@@ -3828,7 +3810,6 @@ function ExplorerNodeSelector({
                   onClick={() => {
                     onSelectNode(node);
                     setIsOpen(false);
-                    setSearch("");
                   }}
                   className={cn(
                     "grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2 text-left transition",
@@ -3852,8 +3833,8 @@ function ExplorerNodeSelector({
                 </button>
               );
             })}
-            {filteredNodes.length === 0 ? (
-              <div className="px-3 py-4 text-sm text-slate-500">No nodes match your search</div>
+            {nodes.length === 0 ? (
+              <div className="px-3 py-4 text-sm text-slate-500">No nodes available</div>
             ) : null}
           </div>
         </div>
