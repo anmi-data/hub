@@ -5,6 +5,7 @@ import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/St
 import { getLocalizedCategory, getLocalizedText, localizedPath, type Locale, useLocale } from "../i18n/locale";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
+import { groupAssetDeltas } from "./assetDeltaGroups";
 
 type StrategySummary = {
   id: string;
@@ -2475,13 +2476,16 @@ function AssetDeltasTable({
   error: string | null;
   isLoading: boolean;
 }): JSX.Element {
+  const locale = useLocale();
+  const deltaGroups = groupAssetDeltas(data?.deltas ?? [], locale);
+
   return (
     <div className="mt-5 min-w-0">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
         Net asset delta
       </div>
       <div className="mt-1 text-xs leading-5 text-slate-500">
-        Account balances + LP assets + signed futures/perps. USD stablecoins are grouped as USD.
+        Account balances + LP assets + signed futures/perps. USD exposure is hidden.
       </div>
 
       {isLoading ? (
@@ -2493,7 +2497,7 @@ function AssetDeltasTable({
         <div className="mt-3 rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs leading-5 text-amber-100">
           {error}
         </div>
-      ) : data && data.deltas.length > 0 ? (
+      ) : deltaGroups.length > 0 ? (
         <div className="mt-3 min-w-0 overflow-hidden rounded-xl border border-white/10">
           <table className="w-full table-fixed text-xs">
             <colgroup>
@@ -2508,40 +2512,47 @@ function AssetDeltasTable({
                 <th className="px-2 py-2 text-right" title="Net asset delta converted at the latest available USD price">Delta, USD</th>
               </tr>
             </thead>
-            <tbody>
-              {data.deltas.map((delta) => {
-                const sourceTitle = delta.sourceSymbols.length > 1
-                  ? `Grouped from ${delta.sourceSymbols.join(", ")}`
-                  : undefined;
-                return (
-                  <tr key={delta.assetSymbol} className="border-t border-white/10">
-                    <td className="px-2 py-2 font-semibold text-slate-200" title={sourceTitle}>{delta.assetSymbol}</td>
-                    <td className={cn("px-2 py-2 text-right font-semibold tabular-nums", delta.netDelta < 0 ? "text-rose-200" : delta.netDelta > 0 ? "text-emerald-200" : "text-slate-300")}>
-                      {formatAssetQuantity(delta.netDelta, true)}
-                    </td>
-                    <td
-                      className={cn(
-                        "px-2 py-2 text-right font-semibold tabular-nums",
-                        delta.netDeltaUsd === null
-                          ? "text-slate-500"
-                          : delta.netDeltaUsd < 0
-                            ? "text-rose-200"
-                            : delta.netDeltaUsd > 0
-                              ? "text-emerald-200"
-                              : "text-slate-300",
-                      )}
-                      title={delta.priceUsd === null ? undefined : `Price: ${formatUsdOrNA(delta.priceUsd)}`}
-                    >
-                      {formatSignedUsdOrNA(delta.netDeltaUsd)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
+            {deltaGroups.map((group) => (
+              <tbody key={group.id}>
+                <tr className="border-t border-white/10 bg-slate-800/50">
+                  <th scope="rowgroup" colSpan={3} className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.08em] text-cyan-200/80">
+                    {group.label}
+                  </th>
+                </tr>
+                {group.deltas.map((delta) => {
+                  const sourceTitle = delta.sourceSymbols.length > 1
+                    ? `Grouped from ${delta.sourceSymbols.join(", ")}`
+                    : undefined;
+                  return (
+                    <tr key={delta.assetSymbol} className="border-t border-white/10">
+                      <td className="px-2 py-2 font-semibold text-slate-200" title={sourceTitle}>{delta.assetSymbol}</td>
+                      <td className={cn("px-2 py-2 text-right font-semibold tabular-nums", delta.netDelta < 0 ? "text-rose-200" : delta.netDelta > 0 ? "text-emerald-200" : "text-slate-300")}>
+                        {formatAssetQuantity(delta.netDelta, true)}
+                      </td>
+                      <td
+                        className={cn(
+                          "px-2 py-2 text-right font-semibold tabular-nums",
+                          delta.netDeltaUsd === null
+                            ? "text-slate-500"
+                            : delta.netDeltaUsd < 0
+                              ? "text-rose-200"
+                              : delta.netDeltaUsd > 0
+                                ? "text-emerald-200"
+                                : "text-slate-300",
+                        )}
+                        title={delta.priceUsd === null ? undefined : `Price: ${formatUsdOrNA(delta.priceUsd)}`}
+                      >
+                        {formatSignedUsdOrNA(delta.netDeltaUsd)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            ))}
           </table>
         </div>
       ) : data ? (
-        <div className="mt-3 text-xs text-slate-500">No current asset exposure is available for this scope.</div>
+        <div className="mt-3 text-xs text-slate-500">No current non-USD asset exposure is available for this scope.</div>
       ) : null}
 
       {data?.dataQuality.warnings.length ? (
