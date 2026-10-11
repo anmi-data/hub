@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle, ChevronDown, Circle, LineChart, Loader2, ShieldCheck, TrendingUp, X, XCircle } from "lucide-react";
 import { StrategyTimeSeriesChart, type ChartView } from "../components/charts/StrategyTimeSeriesChart";
+import { parseCapitalFlows, type ChartCapitalFlow } from "../components/charts/capitalFlows";
 import { getLocalizedCategory, getLocalizedText, localizedPath, type Locale, useLocale } from "../i18n/locale";
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
@@ -272,6 +273,7 @@ type NormalizedChartPoint = {
 };
 
 type NormalizedChartSeries = {
+  capitalFlows?: ChartCapitalFlow[];
   id: string;
   chartKey: string;
   label: string;
@@ -2194,7 +2196,8 @@ function normalizeChartResponse(payload: unknown, chartMode: ChartMode): { serie
         .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       const warnings = Array.isArray(item.warnings) ? item.warnings.map(asString).filter((warning): warning is string => Boolean(warning)) : [];
 
-      return { id, chartKey, label, type, symbol, points, warnings };
+      const capitalFlows = type === "primary" && isRecord(payload) ? parseCapitalFlows(payload.capitalFlows) : [];
+      return { id, chartKey, label, type, symbol, points, warnings: [...warnings, ...getPayloadWarnings(payload)], capitalFlows };
     })
     .filter((item): item is NormalizedChartSeries => Boolean(item));
 
@@ -2335,6 +2338,7 @@ function buildChartView({
     }
     return {
       mode: "aum",
+      capitalFlows: primarySeries?.capitalFlows ?? [],
       title: "AUM",
       subtitle: "Total value of assets under management.",
       primaryLabel: "AUM",
@@ -3023,7 +3027,7 @@ export function StrategiesPage(): JSX.Element {
     const cacheKey = `${selectedStrategy.id}:${metric}`;
     if (primaryChartCache[cacheKey]) {
       setIsLoadingNav(false);
-      setNavError(null);
+      setNavError(primaryChartCache[cacheKey].warnings.join(" ") || null);
       return;
     }
 
@@ -3042,7 +3046,7 @@ export function StrategiesPage(): JSX.Element {
         const primarySeries = normalized.series.find((series) => series.type === "primary" && series.points.length > 0);
         if (primarySeries) {
           setPrimaryChartCache((current) => ({ ...current, [cacheKey]: primarySeries }));
-          setNavError(null);
+          setNavError(primarySeries.warnings.join(" ") || null);
         } else {
           setNavError("Unable to load primary strategy series.");
         }

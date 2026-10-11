@@ -3,6 +3,8 @@ import {
   AreaSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
+  type ISeriesMarkersPluginApi,
   LineSeries,
   type AreaData,
   type BarPrice,
@@ -14,6 +16,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { Loader2 } from "lucide-react";
+import { alignCapitalFlows, formatFlowUsd, type ChartCapitalFlow } from "./capitalFlows";
 
 export type ChartViewPoint = {
   time: number;
@@ -21,6 +24,7 @@ export type ChartViewPoint = {
 };
 
 export type ChartView = {
+  capitalFlows?: ChartCapitalFlow[];
   mode: "aum" | "unit_price";
   title: string;
   subtitle: string;
@@ -37,6 +41,7 @@ type StrategyTimeSeriesChartProps = {
 };
 
 type TooltipState = {
+  flows?: ChartCapitalFlow[];
   visible: boolean;
   x: number;
   y: number;
@@ -123,6 +128,8 @@ export function StrategyTimeSeriesChart({
   const chartRef = useRef<IChartApi | null>(null);
   const primarySeriesRef = useRef<ISeriesApi<"Area", Time> | null>(null);
   const benchmarkSeriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const flowsRef = useRef(new Map<number, ChartCapitalFlow[]>());
   const chartViewRef = useRef(chartView);
   const primarySignatureRef = useRef<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, date: "" });
@@ -182,6 +189,7 @@ export function StrategyTimeSeriesChart({
     chartRef.current = chart;
     primarySeriesRef.current = primarySeries;
     benchmarkSeriesRef.current = benchmarkSeries;
+    markersRef.current = createSeriesMarkers(primarySeries, []);
 
     const handleCrosshairMove = (param: MouseEventParams<Time>): void => {
       if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0 || param.point.x > container.clientWidth || param.point.y > container.clientHeight) {
@@ -202,6 +210,7 @@ export function StrategyTimeSeriesChart({
         x: Math.min(param.point.x + 14, Math.max(14, container.clientWidth - 190)),
         y: Math.min(param.point.y + 14, Math.max(14, container.clientHeight - 112)),
         date: formatTooltipDate(param.time),
+        flows: typeof param.time === "number" ? flowsRef.current.get(param.time) : undefined,
         primary: primaryValue === undefined ? undefined : formatPrimaryValue(primaryValue, chartViewRef.current.valueMode),
         benchmark: benchmarkValue === undefined ? undefined : formatBenchmarkValue(benchmarkValue),
       });
@@ -218,6 +227,8 @@ export function StrategyTimeSeriesChart({
     return () => {
       resizeObserver.disconnect();
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      markersRef.current?.detach();
+      markersRef.current = null;
       chart.remove();
       chartRef.current = null;
       primarySeriesRef.current = null;
@@ -242,6 +253,21 @@ export function StrategyTimeSeriesChart({
   }, [loading, primaryData, primarySignature]);
 
   useEffect(() => {
+    const flows = alignCapitalFlows(chartView.mode === "aum" ? chartView.capitalFlows ?? [] : [],
+      primaryData.map(point => Number(point.time)));
+    flowsRef.current = flows;
+    setTooltip(current => ({ ...current, visible: false }));
+    markersRef.current?.setMarkers([...flows.entries()].sort(([a], [b]) => a - b).flatMap(([time, events]) =>
+      events.map(flow => ({
+        time: toSeriesTime(time), id: `capital-flow-${flow.id}`,
+        position: flow.externalFlowUsd < 0 ? "aboveBar" as const : "belowBar" as const,
+        shape: flow.externalFlowUsd === 0 ? "circle" as const : flow.externalFlowUsd > 0 ? "arrowUp" as const : "arrowDown" as const,
+        color: flow.externalFlowUsd === 0 ? "#a78bfa" : flow.externalFlowUsd > 0 ? "#34d399" : "#fb7185",
+        text: flow.externalFlowUsd === 0 ? `${flow.flowType} ${formatPrimaryValue(Math.abs(flow.valueUsd), "usd")}` : formatFlowUsd(flow.externalFlowUsd),
+      }))));
+  }, [chartView.mode, chartView.capitalFlows, primaryData]);
+
+  useEffect(() => {
     benchmarkSeriesRef.current?.setData(hasBenchmark ? benchmarkData : []);
   }, [benchmarkData, hasBenchmark]);
 
@@ -261,6 +287,11 @@ export function StrategyTimeSeriesChart({
   return (
     <div className="relative h-[420px]">
       <div ref={containerRef} className="h-full w-full" />
+      {chartView.mode === "aum" && (chartView.capitalFlows?.length ?? 0) > 0 ? (
+        <div className="pointer-events-none absolute left-3 top-2 z-10 rounded bg-slate-950/80 px-2 py-1 text-[10px] text-slate-400">
+          Capital flows: <span className="text-emerald-300">in</span> / <span className="text-rose-300">out</span> / <span className="text-violet-300">internal</span> · hover for details
+        </div>
+      ) : null}
 
       {!loading && primaryData.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl border border-white/10 bg-white/[0.025] text-sm text-slate-500">
@@ -270,8 +301,8 @@ export function StrategyTimeSeriesChart({
 
       {tooltip.visible ? (
         <div
-          className="pointer-events-none absolute z-30 min-w-[176px] rounded-xl border border-white/10 bg-slate-950/95 px-3 py-2 text-xs shadow-2xl shadow-black/50"
-          style={{ left: tooltip.x, top: tooltip.y }}
+          className="absolute z-30 max-h-[380px] min-w-[176px] max-w-[320px] overflow-y-auto break-words rounded-xl border border-white/10 bg-slate-950/95 px-3 py-2 text-xs shadow-2xl shadow-black/50"
+          style={{ left: tooltip.x, top: tooltip.flows?.length ? 14 : tooltip.y }}
         >
           <div className="mb-1 text-[11px] font-medium text-cyan-100">{tooltip.date}</div>
           {tooltip.primary ? (
@@ -286,6 +317,19 @@ export function StrategyTimeSeriesChart({
               <span className="font-semibold tabular-nums text-violet-100">{tooltip.benchmark}</span>
             </div>
           ) : null}
+          {tooltip.flows?.map(flow => (
+            <div key={flow.id} className="mt-2 border-t border-white/10 pt-2 text-slate-300">
+              <div className="font-semibold" style={{ color: flow.externalFlowUsd > 0 ? "#34d399" : flow.externalFlowUsd < 0 ? "#fb7185" : "#a78bfa" }}>
+                {flow.flowType} · {formatFlowUsd(flow.externalFlowUsd)}
+              </div>
+              <div>{formatTooltipDate(toSeriesTime(Date.parse(flow.timestamp) / 1000))}</div>
+              {flow.fromAccountId ? <div>From: {flow.fromAccountId}</div> : null}
+              {flow.toAccountId ? <div>To: {flow.toAccountId}</div> : null}
+              <div>Amount: {flow.amount === null ? "Unavailable" : flow.amount.toLocaleString("en-US", { maximumFractionDigits: 8 })} {flow.assetSymbol}</div>
+              <div>Value: {formatPrimaryValue(Math.abs(flow.valueUsd), "usd")}</div>
+              {flow.externalFlowUsd === 0 && flow.fromAccountId && flow.toAccountId ? <div>Internal transfer · external flow $0</div> : null}
+            </div>
+          ))}
         </div>
       ) : null}
 
