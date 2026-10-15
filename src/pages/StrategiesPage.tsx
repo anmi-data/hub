@@ -1150,7 +1150,7 @@ type StrategyMetricKey =
   | "dailyVar95Pct"
   | "lifetimeDays";
 
-type StrategySortKey = "name" | StrategyMetricKey;
+type StrategySortKey = "name" | "navUsd" | StrategyMetricKey;
 type SortDirection = "asc" | "desc";
 
 type StrategyMetricColumn = {
@@ -4302,15 +4302,15 @@ function StrategySelectorGrid({
   onSelect: (strategyId: string) => void;
   onClose: () => void;
 }): JSX.Element {
-  const [sortKey, setSortKey] = useState<StrategySortKey>("name");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [sortKey, setSortKey] = useState<StrategySortKey>("navUsd");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const sortedStrategies = useMemo(() => {
     return [...strategies].sort((left, right) => {
       if (sortKey === "name") {
         const comparison = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
         return sortDirection === "asc" ? comparison : -comparison;
       }
-      return compareNullableMetricValues(left[sortKey], right[sortKey], sortDirection);
+      return compareNullableMetricValues(left[sortKey] ?? null, right[sortKey] ?? null, sortDirection);
     });
   }, [sortDirection, sortKey, strategies]);
   const desktopGridStyle = {
