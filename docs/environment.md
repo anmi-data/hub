@@ -8,7 +8,8 @@ Local `.env` files are ignored by Git.
 
 Read the values in the tracker integration through
 `import.meta.env.VITE_POSTHOG_PROJECT_TOKEN` and `import.meta.env.VITE_POSTHOG_HOST`.
-These settings do not initialize PostHog or send events by themselves.
+PostHog loads only after explicit analytics acceptance. Development tracking is
+disabled unless `VITE_ANALYTICS_DEBUG=true`; use a separate test project for this.
 
 ## Deployment
 

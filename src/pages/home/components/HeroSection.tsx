@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { ArrowRight, ShieldCheck } from "lucide-react";
 import { localizedPath, useLocale } from "../../../i18n/locale";
 import { Pill } from "../ui/Pill";
+import { trackEvent } from "../../../lib/analytics";
 
 export function HeroSection(): JSX.Element {
   const locale = useLocale();
@@ -25,6 +26,7 @@ export function HeroSection(): JSX.Element {
       <div className="mt-9 flex flex-col gap-3 sm:flex-row">
         <a
           href={localizedPath(locale, "/strategies")}
+          onClick={() => trackEvent("explore_strategies_clicked", { source: "hero", destination: "strategies" })}
           className="inline-flex items-center justify-center rounded-full bg-cyan-200 px-6 py-3 text-sm font-semibold text-slate-950 shadow-xl shadow-cyan-950/25 transition hover:bg-white"
         >
           Explore Strategies
@@ -32,6 +34,7 @@ export function HeroSection(): JSX.Element {
         </a>
         <a
           href="#analytics"
+          onClick={() => trackEvent("cta_clicked", { source: "hero", destination: "other", feature: "analytics" })}
           className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/[0.06] px-6 py-3 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/[0.1]"
         >
           View Analytics

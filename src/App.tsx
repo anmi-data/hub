@@ -2,6 +2,9 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useParams } from "react-router-dom";
 import { DEFAULT_LOCALE, isSupportedLocale, LocaleProvider, localizedPath } from "./i18n/locale";
 import HomePage from "./pages/home/HomePage";
+import { AnalyticsConsent } from "./components/analytics/AnalyticsConsent";
+import { PageViewTracker } from "./components/analytics/PageViewTracker";
+import { PrivacyPage } from "./pages/PrivacyPage";
 
 const StrategiesPage = lazy(async () => {
   const module = await import("./pages/StrategiesPage");
@@ -27,6 +30,7 @@ function LocaleLayout(): JSX.Element {
 
   return (
     <LocaleProvider locale={normalizedLocale}>
+      <PageViewTracker />
       <Outlet />
     </LocaleProvider>
   );
@@ -52,6 +56,7 @@ export default function App(): JSX.Element {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
+        <Route path="/privacy" element={<><PageViewTracker /><PrivacyPage /></>} />
         <Route path="/" element={<Navigate to={localizedPath(DEFAULT_LOCALE)} replace />} />
         <Route path="/strategies" element={<LegacyStrategyRedirect />} />
         <Route path="/strategies/:strategyId" element={<LegacyStrategyRedirect />} />
@@ -66,6 +71,7 @@ export default function App(): JSX.Element {
 
         <Route path="*" element={<Navigate to={localizedPath(DEFAULT_LOCALE)} replace />} />
       </Routes>
+      <AnalyticsConsent />
     </BrowserRouter>
   );
 }

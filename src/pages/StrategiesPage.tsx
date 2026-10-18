@@ -7,6 +7,9 @@ import { getLocalizedCategory, getLocalizedText, localizedPath, type Locale, use
 import anmiLogo from "./home/assets/anmi_logo_header.webp";
 import { cn } from "./home/utils/cn";
 import { groupAssetDeltas } from "./assetDeltaGroups";
+import { getAnalyticsConsent, trackEvent } from "../lib/analytics";
+import { explorerProperties, safeDataset, searchLengthBucket } from "../lib/analytics-events";
+import { useExplorerVisibility } from "../components/analytics/useExplorerVisibility";
 
 type StrategySummary = {
   id: string;
@@ -2681,6 +2684,7 @@ export function StrategiesPage(): JSX.Element {
   const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
   const [historySearchInput, setHistorySearchInput] = useState("");
   const [historySearch, setHistorySearch] = useState("");
+  const searchEditedByUser = useRef(false);
   const [historyPage, setHistoryPage] = useState(1);
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const [historyPageSize, setHistoryPageSize] = useState<(typeof HISTORY_PAGE_SIZES)[number]>(DEFAULT_HISTORY_PAGE_SIZE);
@@ -2886,13 +2890,19 @@ export function StrategiesPage(): JSX.Element {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      setHistorySearch(historySearchInput.trim().slice(0, 200));
+      const committed = historySearchInput.trim().slice(0, 200);
+      const bucket = searchLengthBucket(committed.length);
+      if (searchEditedByUser.current && committed !== historySearch && bucket) {
+        trackEvent("explorer_history_search_used", { dataset: safeDataset(selectedDataset), search_length_bucket: bucket });
+      }
+      searchEditedByUser.current = false;
+      setHistorySearch(committed);
     }, 300);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [historySearchInput]);
+  }, [historySearchInput, historySearch, selectedDataset]);
 
   useEffect(() => {
     if (historyPage > totalHistoryPages) {
@@ -3284,6 +3294,10 @@ export function StrategiesPage(): JSX.Element {
   }, [benchmarkCache, chartMode, primaryChartCache, selectedBenchmark, selectedStrategy]);
 
   function handleStrategyChange(nextId: string): void {
+    const nextStrategy = strategies.find(strategy => strategy.id === nextId);
+    if (nextStrategy && nextId !== selectedStrategy?.id) {
+      trackEvent("strategy_selected", { group_id: nextStrategy.groupId, previous_group_id: selectedStrategy?.groupId ?? null });
+    }
     setIsSelectorOpen(false);
     setStrategySearch("");
     navigate(localizedPath(locale, `/strategies/${encodeURIComponent(nextId)}`));
@@ -3291,27 +3305,33 @@ export function StrategiesPage(): JSX.Element {
 
   function handleChartModeChange(value: string): void {
     const nextMode: ChartMode = value === "nav_usd" ? "nav_usd" : "unit_price";
+    if (nextMode !== chartMode) trackEvent("chart_mode_changed", { mode: nextMode === "nav_usd" ? "aum" : "unit_price" });
     setChartMode(nextMode);
     persistChartMode(nextMode);
   }
 
   function handleBenchmarkChange(value: string): void {
     const nextBenchmark = value.trim().length > 0 ? value : null;
+    if (nextBenchmark !== selectedBenchmark) trackEvent("benchmark_selected", { symbol: nextBenchmark ?? "none" });
     setSelectedBenchmark(nextBenchmark);
     persistSelectedBenchmark(nextBenchmark);
     setIsBenchmarkMenuOpen(false);
   }
 
   function handleHistoryPageChange(nextPage: number): void {
-    setHistoryPage(Math.max(1, Math.min(totalHistoryPages, nextPage)));
+    const requestedPage = Math.max(1, Math.min(totalHistoryPages, nextPage));
+    if (requestedPage !== historyPage) trackEvent("explorer_history_page_changed", { dataset: safeDataset(selectedDataset), page: requestedPage });
+    setHistoryPage(requestedPage);
   }
 
   function handleHistoryPageSizeChange(nextPageSize: (typeof HISTORY_PAGE_SIZES)[number]): void {
+    if (nextPageSize !== historyPageSize) trackEvent("explorer_history_page_size_changed", { dataset: safeDataset(selectedDataset), page_size: nextPageSize });
     setHistoryPageSize(nextPageSize);
     setHistoryPage(1);
   }
 
   function handleHistorySearchInputChange(value: string): void {
+    searchEditedByUser.current = getAnalyticsConsent() === "accepted";
     setHistorySearchInput(value);
     setHistoryPage(1);
   }
@@ -3322,6 +3342,8 @@ export function StrategiesPage(): JSX.Element {
   }
 
   function handleExplorerNodeChange(node: ExplorerTreeNode): void {
+    searchEditedByUser.current = false;
+    if (node.uiKey !== selectedTreeNode?.uiKey) trackEvent("explorer_node_selected", explorerProperties(node, getDefaultDatasetForNode(node)));
     setSelectedTreeNode(node);
     setHistoryPage(1);
     setHistorySearchInput("");
@@ -3357,7 +3379,10 @@ export function StrategiesPage(): JSX.Element {
                       disabled={strategies.length === 0}
                       aria-expanded={isSelectorOpen}
                       aria-label="Select strategy"
-                      onClick={() => setIsSelectorOpen((isOpen) => !isOpen)}
+                      onClick={() => {
+                        if (!isSelectorOpen) trackEvent("strategy_selector_opened", { group_id: selectedStrategy?.groupId ?? null });
+                        setIsSelectorOpen(!isSelectorOpen);
+                      }}
                       className="group inline-flex max-w-full items-center gap-2 text-left transition focus:outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-70"
                     >
                       <span className="truncate text-2xl font-semibold tracking-[-0.04em] text-white transition group-hover:text-cyan-50 sm:text-3xl">
@@ -3786,7 +3811,10 @@ function ExplorerNodeSelector({
       <button
         type="button"
         disabled={nodes.length === 0}
-        onClick={() => setIsOpen((value) => !value)}
+        onClick={() => {
+          if (!isOpen) trackEvent("explorer_selector_opened", explorerProperties(selectedNode));
+          setIsOpen(!isOpen);
+        }}
         className={cn(
           "flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-left transition",
           "hover:border-cyan-300/30 hover:bg-cyan-300/5 disabled:cursor-not-allowed disabled:opacity-50",
@@ -3910,6 +3938,7 @@ function DataExplorer({
 }): JSX.Element {
   const locale = useLocale();
   const flatNodes = useMemo(() => flattenExplorerNodes(nodes), [nodes]);
+  const visibilityRef = useExplorerVisibility();
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
   const canGoBack = hasPreviousHistoryPage;
   const canGoForward = hasNextHistoryPage;
@@ -3920,7 +3949,7 @@ function DataExplorer({
     : details?.warnings.map((message) => ({ level: "warning", code: "warning", message })) ?? [];
 
   return (
-    <section className="mt-6 min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
+    <section ref={visibilityRef} className="mt-6 min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/10 bg-[#081421]/90 p-4 shadow-2xl shadow-slate-950/30 sm:p-6">
       <div className="mb-5">
         <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-100">Track Record Explorer</div>
         <p className="mt-2 text-sm text-slate-500">

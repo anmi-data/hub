@@ -5,6 +5,7 @@ logs
 **/*.backup.*
 **/*.back.*
 dist/
+test-results/
 .env
 .env.*
 !.env.example

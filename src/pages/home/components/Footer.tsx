@@ -1,6 +1,7 @@
 import anmiLogo from "../assets/anmi_logo_header.webp";
 import { footerColumns } from "../data/footerData";
 import { localizedPath, useLocale } from "../../../i18n/locale";
+import { trackEvent } from "../../../lib/analytics";
 
 export function Footer(): JSX.Element {
   const locale = useLocale();
@@ -37,6 +38,7 @@ export function Footer(): JSX.Element {
                 {column.links.map((link) => (
                   <a
                     key={`${column.title}-${link.label}`}
+                    onClick={() => { if (link.href === "/strategies") trackEvent("strategies_nav_clicked", { source: "navigation", destination: "strategies" }); }}
                     href={link.href.startsWith("/") ? localizedPath(locale, link.href) : link.href}
                     className="text-sm text-slate-400 transition hover:text-white"
                   >

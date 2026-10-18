@@ -1,6 +1,7 @@
 import anmiLogo from "../assets/anmi_logo_header.webp";
 import { homeNavigation, socialLinks } from "../data/homeNavigation";
 import { localizedPath, useLocale } from "../../../i18n/locale";
+import { trackEvent } from "../../../lib/analytics";
 
 export function Header(): JSX.Element {
   const locale = useLocale();
@@ -24,6 +25,7 @@ export function Header(): JSX.Element {
           {homeNavigation.map((item) => (
             <a
               key={item.href}
+              onClick={() => { if (item.href === "/strategies") trackEvent("strategies_nav_clicked", { source: "navigation", destination: "strategies" }); }}
               className="transition hover:text-white"
               href={item.href.startsWith("/") ? localizedPath(locale, item.href) : item.href}
             >

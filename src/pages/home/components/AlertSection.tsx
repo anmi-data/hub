@@ -4,6 +4,7 @@ import { SectionLabel } from "../ui/SectionLabel";
 import { InteractiveCard } from "../ui/InteractiveCard";
 import { cn } from "../utils/cn";
 import { localizedPath, useLocale } from "../../../i18n/locale";
+import { trackEvent } from "../../../lib/analytics";
 
 export function AlertSection(): JSX.Element {
   const locale = useLocale();
@@ -24,6 +25,7 @@ export function AlertSection(): JSX.Element {
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <a
                 href={localizedPath(locale, "/notifications")}
+                onClick={() => trackEvent("cta_clicked", { source: "other", destination: "product", feature: "alerts" })}
                 className="inline-flex items-center justify-center rounded-full bg-cyan-200 px-6 py-3 text-sm font-semibold text-slate-950 shadow-xl shadow-cyan-950/25 transition hover:bg-white"
               >
                   View all alerts
@@ -31,6 +33,7 @@ export function AlertSection(): JSX.Element {
               </a>
               <a
                 href="#methodology"
+                onClick={() => trackEvent("cta_clicked", { source: "other", destination: "other", feature: "follow_strategies" })}
                 className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/[0.06] px-6 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
               >
                 Choose strategies to follow
