@@ -46,6 +46,7 @@ async function fixture({ mock = true, mobile = false, saved } = {}) {
   await context.route("**/api/**", async route => {
     const url = new URL(route.request().url());
     let payload = {};
+    if (url.pathname.endsWith("/data-revision")) payload = { dataRevision: 1 };
     if (url.pathname.endsWith("/display/strategies")) payload = { strategies: [
       { id: "alpha", groupId: "public-alpha", name: "Alpha", status: "complete" },
       { id: "beta", groupId: "public-beta", name: "Beta", status: "complete" },
@@ -63,6 +64,43 @@ async function fixture({ mock = true, mobile = false, saved } = {}) {
   return { context, page };
 }
 async function events(page, name) { return page.evaluate(name => (window.__analyticsEvents ?? []).filter(e => !name || e.event === name), name); }
+
+test("browser: account cache survives unchanged revision and refreshes after collect", async () => {
+  const { context, page } = await fixture();
+  let revision = 1;
+  let polls = 0;
+  const details = [];
+  await context.route("**/api/v1/data-revision", async route => {
+    polls++;
+    await route.fulfill({ json: { dataRevision: revision } });
+  });
+  context.on("request", request => {
+    if (new URL(request.url()).pathname.endsWith("/explorer/details")) details.push(request.url());
+  });
+  try {
+    await page.goto(origin + "/en/strategies/alpha");
+    const explorer = page.locator("section").filter({ has: page.getByText("Track Record Explorer", { exact: true }) }).first();
+    const select = async (from, to) => {
+      await explorer.getByRole("button", { name: new RegExp(`^${from}\\s+Account$`, "i") }).click();
+      await explorer.getByRole("button", { name: new RegExp(`^${to}\\s+Account`, "i") }).click();
+    };
+    await select("First account", "Second account");
+    await select("Second account", "First account");
+    const countBefore = details.length;
+    const pollBefore = polls;
+    const polled = page.waitForResponse(response => response.url().endsWith("/data-revision"));
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await polled;
+    assert.ok(polls > pollBefore);
+    await select("First account", "Second account");
+    assert.equal(details.length, countBefore);
+    revision = 2;
+    const refreshed = page.waitForRequest(request => request.url().includes("/explorer/details"));
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await refreshed;
+    assert.ok(details.length > countBefore);
+  } finally { await context.close(); }
+});
 async function count(page, name, expected) {
   await page.waitForFunction(({ name, expected }) => (window.__analyticsEvents ?? []).filter(e => e.event === name).length === expected, { name, expected });
 }

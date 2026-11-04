@@ -10,6 +10,7 @@ import { groupAssetDeltas } from "./assetDeltaGroups";
 import { getAnalyticsConsent, trackEvent } from "../lib/analytics";
 import { explorerProperties, safeDataset, searchLengthBucket } from "../lib/analytics-events";
 import { useExplorerVisibility } from "../components/analytics/useExplorerVisibility";
+import { createRequestCache } from "../lib/request-cache";
 
 type StrategySummary = {
   id: string;
@@ -1900,8 +1901,13 @@ class ApiRequestError extends Error {
   }
 }
 
-async function fetchJson(url: string, locale?: Locale): Promise<unknown> {
-  const response = await fetch(locale ? localizedApiUrl(url, locale) : url, {
+const apiResponseCache = createRequestCache(Infinity, 500);
+
+function fetchJson(url: string, locale?: Locale): Promise<unknown> {
+  const requestUrl = locale ? localizedApiUrl(url, locale) : url;
+  return apiResponseCache.get(requestUrl, async () => {
+  const response = await fetch(requestUrl, {
+    cache: "no-cache",
     headers: locale ? { "Accept-Language": locale } : undefined,
   });
   if (!response.ok) {
@@ -1912,6 +1918,7 @@ async function fetchJson(url: string, locale?: Locale): Promise<unknown> {
     throw new ApiRequestError(response.status, responseMessage);
   }
   return response.json() as Promise<unknown>;
+  });
 }
 
 function shouldRetryAdvancedMetrics(error: unknown): boolean {
@@ -2754,7 +2761,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [locale]);
+  }, [historyRefresh, locale]);
 
   useEffect(() => {
     let active = true;
@@ -2991,7 +2998,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [locale, selectedStrategy]);
+  }, [historyRefresh, locale, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -3027,7 +3034,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [advancedMetricsRequestVersion, advancedMetricsWindow, locale, selectedStrategy]);
+  }, [advancedMetricsRequestVersion, advancedMetricsWindow, historyRefresh, locale, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -3035,11 +3042,6 @@ export function StrategiesPage(): JSX.Element {
     }
     const metric = chartMode === "nav_usd" ? "nav_usd" : "unit_price";
     const cacheKey = `${selectedStrategy.id}:${metric}`;
-    if (primaryChartCache[cacheKey]) {
-      setIsLoadingNav(false);
-      setNavError(primaryChartCache[cacheKey].warnings.join(" ") || null);
-      return;
-    }
 
     let active = true;
     setIsLoadingNav(true);
@@ -3071,10 +3073,10 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [chartMode, locale, primaryChartCache, selectedStrategy]);
+  }, [chartMode, historyRefresh, locale, selectedStrategy]);
 
   useEffect(() => {
-    if (chartMode !== "unit_price" || !selectedBenchmark || benchmarkCache[selectedBenchmark]) {
+    if (chartMode !== "unit_price" || !selectedBenchmark) {
       setIsLoadingBenchmarkHistory(false);
       return;
     }
@@ -3099,7 +3101,16 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [benchmarkCache, chartMode, locale, selectedBenchmark]);
+  }, [chartMode, historyRefresh, locale, selectedBenchmark]);
+
+  useEffect(() => {
+    setSelectedTreeNode(null);
+    setTreeNodes([]);
+    setTreeWarnings([]);
+    setHistoryPage(1);
+    setHistorySearchInput("");
+    setHistorySearch("");
+  }, [locale, selectedStrategy?.groupId]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -3111,17 +3122,14 @@ export function StrategiesPage(): JSX.Element {
     let active = true;
     setIsLoadingTree(true);
     setTreeError(null);
-    setSelectedTreeNode(null);
-    setHistoryPage(1);
-    setHistorySearchInput("");
-    setHistorySearch("");
     fetchJson(`/api/v1/strategy-groups/${encodeURIComponent(selectedStrategy.groupId)}/tree`, locale)
       .then((payload) => {
         if (!active) return;
         const normalized = normalizeTree(payload, locale);
         setTreeNodes(normalized);
         setTreeWarnings(getTreeStructuredWarnings(payload));
-        setSelectedTreeNode(getFirstTreeNode(normalized) ?? null);
+        setSelectedTreeNode(current => flattenExplorerNodes(normalized).find(node => node.uiKey === current?.uiKey)
+          ?? getFirstTreeNode(normalized) ?? null);
       })
       .catch(() => {
         if (!active) return;
@@ -3135,7 +3143,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [locale, selectedStrategy]);
+  }, [historyRefresh, locale, selectedStrategy]);
 
   useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode) {
@@ -3179,7 +3187,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [locale, selectedStrategy, selectedTreeNode]);
+  }, [historyRefresh, locale, selectedStrategy, selectedTreeNode]);
 
   useEffect(() => {
     const url = buildAssetDeltasUrl(selectedTreeNode);
@@ -3218,7 +3226,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [locale, selectedTreeNode]);
+  }, [historyRefresh, locale, selectedTreeNode]);
 
   useEffect(() => {
     if (!selectedStrategy || !selectedTreeNode || !selectedDataset) return;
@@ -3261,12 +3269,41 @@ export function StrategiesPage(): JSX.Element {
   }, [historyPage, historyPageSize, historySearch, historyRefresh, locale, selectedDataset, selectedStrategy, selectedTreeNode]);
 
   useEffect(() => {
-    const refreshHistory = (): void => {
-      if (document.visibilityState === "visible") setHistoryRefresh((value) => value + 1);
+    let active = true;
+    let polling = false;
+    let failed = false;
+    const refreshHistory = async (): Promise<void> => {
+      if (document.visibilityState !== "visible" || polling) return;
+      polling = true;
+      try {
+        const response = await fetch("/api/v1/data-revision", { cache: "no-store" });
+        if (!response.ok) throw new Error(`Data revision request failed: ${response.status}`);
+        const payload: unknown = await response.json();
+        if (!isRecord(payload) || typeof payload.dataRevision !== "number") throw new Error("Invalid data revision response");
+        if (active) {
+          const changed = apiResponseCache.setRevision(payload.dataRevision);
+          // Legacy databases have no publication boundary.
+          if (payload.dataRevision === 0) apiResponseCache.clear();
+          if (changed || payload.dataRevision === 0) setHistoryRefresh((value) => value + 1);
+        }
+        failed = false;
+      } catch (error: unknown) {
+        if (!failed) console.warn("Unable to check for updated collection data; will retry.", error);
+        failed = true;
+        // Bound staleness if the revision endpoint is unavailable during rollout.
+        if (active) {
+          apiResponseCache.clear();
+          setHistoryRefresh((value) => value + 1);
+        }
+      } finally {
+        polling = false;
+      }
     };
-    const interval = window.setInterval(refreshHistory, 60_000);
+    void refreshHistory();
+    const interval = window.setInterval(refreshHistory, 15_000);
     document.addEventListener("visibilitychange", refreshHistory);
     return () => {
+      active = false;
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", refreshHistory);
     };
@@ -3345,9 +3382,24 @@ export function StrategiesPage(): JSX.Element {
     searchEditedByUser.current = false;
     if (node.uiKey !== selectedTreeNode?.uiKey) trackEvent("explorer_node_selected", explorerProperties(node, getDefaultDatasetForNode(node)));
     setSelectedTreeNode(node);
+    setSelectedDataset(getDefaultDatasetForNode(node));
     setHistoryPage(1);
     setHistorySearchInput("");
     setHistorySearch("");
+  }
+
+  function prefetchExplorerNode(node: ExplorerTreeNode): void {
+    if (!selectedStrategy) return;
+    // Warm only the intended node, rather than fan out over every account.
+    const urls = [
+      buildExplorerDetailsUrl("/api/v1", selectedStrategy.groupId, node),
+      buildExplorerHistoryUrl("/api/v1", selectedStrategy.groupId, node, getDefaultDatasetForNode(node), 1, historyPageSize, ""),
+      buildAssetDeltasUrl(node),
+    ];
+    for (const url of urls) {
+      // A speculative failure is retried by the normal load and shown there.
+      if (url) void fetchJson(url, locale).catch(() => undefined);
+    }
   }
 
   return (
@@ -3738,6 +3790,7 @@ export function StrategiesPage(): JSX.Element {
           onHistoryPageChange={handleHistoryPageChange}
           onHistoryPageSizeChange={handleHistoryPageSizeChange}
           onSelectNode={handleExplorerNodeChange}
+          onPrefetchNode={prefetchExplorerNode}
         />
       </section>
     </main>
@@ -3776,10 +3829,12 @@ function ExplorerNodeSelector({
   nodes,
   selectedNode,
   onSelectNode,
+  onPrefetchNode,
 }: {
   nodes: FlatExplorerNode[];
   selectedNode?: ExplorerTreeNode;
   onSelectNode: (node: ExplorerTreeNode) => void;
+  onPrefetchNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -3839,6 +3894,9 @@ function ExplorerNodeSelector({
                 <button
                   key={node.uiKey}
                   type="button"
+                  onMouseEnter={() => onPrefetchNode(node)}
+                  onFocus={() => onPrefetchNode(node)}
+                  onTouchStart={() => onPrefetchNode(node)}
                   onClick={() => {
                     onSelectNode(node);
                     setIsOpen(false);
@@ -3905,6 +3963,7 @@ function DataExplorer({
   onHistoryPageChange,
   onHistoryPageSizeChange,
   onSelectNode,
+  onPrefetchNode,
 }: {
   assetDeltas: AssetDeltasResponse | null;
   assetDeltasError: string | null;
@@ -3935,6 +3994,7 @@ function DataExplorer({
   onHistoryPageChange: (page: number) => void;
   onHistoryPageSizeChange: (pageSize: (typeof HISTORY_PAGE_SIZES)[number]) => void;
   onSelectNode: (node: ExplorerTreeNode) => void;
+  onPrefetchNode: (node: ExplorerTreeNode) => void;
 }): JSX.Element {
   const locale = useLocale();
   const flatNodes = useMemo(() => flattenExplorerNodes(nodes), [nodes]);
@@ -3964,7 +4024,7 @@ function DataExplorer({
 
       <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside className="min-w-0 rounded-xl border border-white/10 bg-slate-950/40 p-4">
-          <ExplorerNodeSelector nodes={flatNodes} selectedNode={selectedNode} onSelectNode={onSelectNode} />
+          <ExplorerNodeSelector nodes={flatNodes} selectedNode={selectedNode} onSelectNode={onSelectNode} onPrefetchNode={onPrefetchNode} />
 
           {isLoadingTree ? <div className="mt-4 text-sm text-slate-500">Loading explorer data...</div> : null}
           {treeError ? <div className="mt-4 text-sm text-amber-100">{treeError}</div> : null}
