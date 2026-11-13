@@ -3405,8 +3405,7 @@ export function StrategiesPage(): JSX.Element {
 
       <header className="relative z-50 border-b border-white/10 bg-[#07111f]/90 backdrop-blur-xl">
         <div className="relative z-40 mx-auto max-w-7xl px-5 py-6 lg:px-8">
-          <div className="mb-3 flex justify-end"><AuthControl /></div>
-          <div className="flex items-start gap-5">
+          <div className="flex items-center gap-5">
             <div className="flex min-w-0 flex-1 flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 flex-1 items-start gap-6">
                 <Link to={localizedPath(locale)} className="shrink-0 pt-5" aria-label="ANMI home">
@@ -3479,6 +3478,7 @@ export function StrategiesPage(): JSX.Element {
                 </div>
               </div>
             </div>
+            <div className="max-w-[10rem] shrink-0 sm:max-w-none"><AuthControl /></div>
           </div>
         </div>
       </header>
