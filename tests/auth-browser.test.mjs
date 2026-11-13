@@ -12,7 +12,7 @@ before(async () => {
 after(async () => { await browser?.close(); await server?.close(); });
 async function fixture(mobile = false) {
   const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1400, height: 1000 }, isMobile: mobile });
-  const state = { user: null, admin: false, temporary: false, protectedRequests: 0, privateCharts: 0 };
+  const state = { user: null, admin: false, temporary: false, protectedRequests: 0, privateCharts: 0, deleted: false };
   const user = mustChangePassword => ({ id: 1, username: 'alice', mustChangePassword });
   const requests = [];
   await context.route('**/api/**', async route => {
@@ -28,8 +28,10 @@ async function fixture(mobile = false) {
     else if (path === '/api/auth/change-password') { state.user = user(false); payload = { user: state.user, csrfToken: 'rotated-user' }; }
     else if (path === '/api/admin/auth/login') { state.admin = true; payload = { admin: true, adminCsrfToken: 'csrf-admin' }; }
     else if (path === '/api/admin/auth/logout') { state.admin = false; payload = { ok: true }; }
-    else if (path === '/api/admin/users' && request.method() === 'GET') payload = { users: [{ id: 1, username: 'alice', isActive: true, mustChangePassword: false, lastLoginAt: null }] };
+    else if (path === '/api/admin/users' && request.method() === 'GET') payload = { users: state.deleted ? [] : [{ id: 1, username: 'alice', isActive: true, mustChangePassword: false, lastLoginAt: null }] };
     else if (path === '/api/admin/users' && request.method() === 'POST') payload = { temporaryPassword: 'once-only-temporary-password' };
+    else if (path === '/api/admin/users/1/reset-password' && request.method() === 'POST') payload = { temporaryPassword: 'abc234xy' };
+    else if (path === '/api/admin/users/1' && request.method() === 'DELETE') { state.deleted = true; payload = { ok: true }; }
     else if (path === '/api/admin/security-audit') payload = { events: [] };
     else if (path.endsWith('/health')) payload = { status: 'ok', database: { canOpen: true } };
     else if (path.endsWith('/data-revision')) payload = { dataRevision: 1 };
@@ -140,6 +142,18 @@ test('Admin login is separate and temporary user passwords disappear after dismi
     await page.getByRole('button', { name: 'Disable', exact: true }).click();
     await page.getByRole('dialog', { name: 'Confirm user action' }).waitFor();
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('button', { name: 'Reset password', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Temporary password' }).getByText('abc234xy', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.getByRole('button', { name: 'Delete user', exact: true }).click();
+    await page.getByText('Permanently delete user alice? All their sessions will be deleted. This cannot be undone.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    assert.equal(state.deleted, false);
+    await page.getByRole('button', { name: 'Delete user', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.getByRole('button', { name: 'Delete user', exact: true }).waitFor({ state: 'detached' });
+    assert.equal(state.deleted, true);
     await page.getByRole('button', { name: 'Log out of Admin' }).click();
     await page.getByLabel('Administrator password', { exact: true }).waitFor();
   } finally { await context.close(); }
