@@ -1142,7 +1142,9 @@ function formatLifetimeDays(value: number | null | undefined): string {
 }
 
 function getChangeValueClassName(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value) || value === 0) return "text-slate-100";
+  if (value === null || value === undefined || !Number.isFinite(value)) return "text-slate-100";
+  // Change fields use percentage points: 1 means 1%.
+  if (Math.abs(value) < 1) return "text-slate-400";
   return value > 0 ? "text-emerald-300" : "text-rose-300";
 }
 

@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { LockKeyhole } from 'lucide-react';
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { CircleUserRound, Ghost, LockKeyhole } from 'lucide-react';
 import { authRequest, clearPrivateData } from '../../lib/auth-client';
 
 export interface AuthUser { id: number; username: string; mustChangePassword: boolean; }
@@ -96,16 +96,33 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       </form>}
       <div className="mt-5 flex items-stretch gap-3">
         {safeTransport ? <button disabled={busy} type="submit" form="auth-form" className="min-w-0 flex-1 rounded-lg border border-cyan-300 bg-cyan-300 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:border-cyan-200 hover:bg-cyan-200 disabled:opacity-50">{busy ? 'Saving…' : form === 'login' ? 'Log in' : 'Save new password'}</button> : null}
-        <button disabled={busy} type="button" className={`${authButton} min-w-0 flex-1`} onClick={() => { if (state.user?.mustChangePassword) void logout(); else setForm(null); }}>{state.user?.mustChangePassword ? 'Log out / Continue as Guest' : 'Cancel / Continue as Guest'}</button>
+        <button disabled={busy} type="button" className={`${authButton} min-w-0 flex-1`} onClick={() => { if (state.user?.mustChangePassword) void logout(); else setForm(null); }}>{state.user?.mustChangePassword ? 'Log out' : 'Cancel'}</button>
       </div>
     </dialog> : null}
   </Context.Provider>;
 }
 export function AuthControl(): JSX.Element {
   const auth = useAuth();
-  return <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
-    <span className="max-w-[10rem] truncate">{auth.user?.username ?? 'Guest'}</span>
-    {auth.user ? <><button className={authButton} onClick={auth.openPassword}>Change password</button><button className={authButton} onClick={() => { void auth.logout(); }}>Log out</button></> : <button className={authButton} onClick={auth.openLogin}>Log in</button>}
+  const [open, setOpen] = useState(false);
+  const container = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !container.current?.contains(event.target)) setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [open]);
+  const Icon = auth.user ? CircleUserRound : Ghost;
+  return <div ref={container} className="relative text-sm text-slate-300" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }} onKeyDown={event => { if (event.key === 'Escape' && open) { event.preventDefault(); setOpen(false); trigger.current?.focus(); } }}>
+    <button ref={trigger} type="button" aria-label={auth.user ? 'User account' : 'Guest account'} aria-expanded={open} aria-controls={panelId} onClick={() => setOpen(value => !value)} className={`inline-flex h-10 w-10 items-center justify-center rounded-full border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 ${auth.user ? 'border-cyan-200/30 bg-cyan-200/10 text-cyan-100 hover:bg-cyan-200/20' : 'border-white/15 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200'}`}>
+      <Icon className="h-6 w-6" aria-hidden="true" />
+    </button>
+    {open ? <div id={panelId} className="absolute right-0 top-full z-[60] mt-3 w-64 max-w-[calc(100vw-2.5rem)] rounded-xl border border-white/15 bg-slate-900 p-4 shadow-xl shadow-black/40">
+      <p className="mb-3 break-words font-semibold text-white">{auth.user?.username ?? 'Guest'}</p>
+      <div className="flex items-stretch gap-2">
+        {auth.user ? <><button className={`${authButton} flex-1`} onClick={() => { setOpen(false); auth.openPassword(); }}>Change password</button><button className={authButton} onClick={() => { setOpen(false); void auth.logout(); }}>Log out</button></> : <button className="w-full rounded-lg bg-cyan-300 px-3 py-2 font-semibold text-slate-950 transition hover:bg-cyan-200" onClick={() => { setOpen(false); auth.openLogin(); }}>Log in</button>}
+      </div>
+    </div> : null}
   </div>;
 }
 export function LockedPanel({ children }: { children: ReactNode }): JSX.Element {

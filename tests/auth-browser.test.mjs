@@ -56,10 +56,15 @@ async function fixture(mobile = false) {
   return { context, page, state, requests };
 }
 async function signIn(page, password = 'personal-test-passphrase') {
+  await page.getByRole('button', { name: 'Guest account', exact: true }).click();
   await page.getByRole('button', { name: 'Log in', exact: true }).first().click();
   await page.getByLabel('Username', { exact: true }).fill('alice');
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('dialog').getByRole('button', { name: 'Log in', exact: true }).click();
+}
+async function accountAction(page, name) {
+  await page.getByRole('button', { name: 'User account', exact: true }).click();
+  await page.getByRole('button', { name, exact: true }).click();
 }
 test('Guest keeps public charts, locks AUM and History, and never requests private records on desktop or mobile', async () => {
   for (const mobile of [false, true]) {
@@ -68,6 +73,15 @@ test('Guest keeps public charts, locks AUM and History, and never requests priva
       await page.goto(origin + '/en/strategies/alpha');
       await page.getByText('Historical records are available to registered users.').waitFor();
       await page.getByRole('button', { name: 'UNIT PRICE', exact: true }).waitFor();
+      const account = page.getByRole('button', { name: 'Guest account', exact: true });
+      await account.click();
+      await page.getByText('Guest', { exact: true }).waitFor();
+      assert.equal(await account.getAttribute('aria-expanded'), 'true');
+      await page.keyboard.press('Escape');
+      assert.equal(await account.getAttribute('aria-expanded'), 'false');
+      await account.click();
+      await page.getByText('Track records and analytics', { exact: true }).click();
+      assert.equal(await account.getAttribute('aria-expanded'), 'false');
       assert.equal(state.protectedRequests, 0); assert.equal(state.privateCharts, 0);
       assert.equal(await page.getByPlaceholder('Search history...').count(), 0);
       assert.doesNotMatch(await page.locator('body').innerText(), /987,654|987654/);
@@ -86,7 +100,7 @@ test('login preserves strategy, unlocks history and AUM, logout purges data, exp
     await signIn(page, 'invalid'); await page.getByRole('alert').filter({ hasText: 'Invalid credentials' }).waitFor();
     await page.getByLabel('Password', { exact: true }).fill('personal-test-passphrase');
     await page.getByRole('dialog').getByRole('button', { name: 'Log in', exact: true }).click();
-    await page.getByRole('button', { name: 'Log out', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'User account', exact: true }).waitFor();
     await page.getByPlaceholder('Search history...').waitFor();
     assert.equal(new URL(page.url()).pathname, '/en/strategies/alpha');
     await page.getByRole('button', { name: 'UNIT PRICE', exact: true }).click();
@@ -94,7 +108,7 @@ test('login preserves strategy, unlocks history and AUM, logout purges data, exp
     await page.getByRole('button', { name: 'AUM', exact: true }).click();
     if (!state.privateCharts) await aumResponse; else void aumResponse.catch(() => {});
     assert.ok(state.protectedRequests > 0); assert.ok(state.privateCharts > 0);
-    await page.getByRole('button', { name: 'Log out', exact: true }).click();
+    await accountAction(page, 'Log out');
     await page.getByText('Historical records are available to registered users.').waitFor();
     assert.doesNotMatch(await page.locator('body').innerText(), /987,654|987654/);
     await signIn(page); await page.getByPlaceholder('Search history...').waitFor();
@@ -122,7 +136,7 @@ test('temporary session forces password change and rejects mismatch before unloc
     const historyResponse = page.waitForResponse(response => response.url().includes('/explorer/history'));
     await page.getByRole('button', { name: 'Save new password' }).click();
     await historyResponse; await page.getByPlaceholder('Search history...').waitFor(); assert.ok(state.protectedRequests > 0);
-    await page.getByRole('button', { name: 'Change password', exact: true }).click();
+    await accountAction(page, 'Change password');
     await page.getByLabel('Current password', { exact: true }).waitFor();
   } finally { await context.close(); }
 });
@@ -166,7 +180,7 @@ test('logout clears financial views in another tab without waiting for polling',
     await page.getByPlaceholder('Search history...').waitFor();
     const second = await context.newPage();
     await second.goto(origin + '/en/strategies/alpha'); await second.getByPlaceholder('Search history...').waitFor();
-    await page.getByRole('button', { name: 'Log out', exact: true }).click();
+    await accountAction(page, 'Log out');
     await second.getByText('Historical records are available to registered users.').waitFor({ timeout: 5000 });
     assert.doesNotMatch(await second.locator('body').innerText(), /987,654|987654/);
   } finally { await context.close(); }
