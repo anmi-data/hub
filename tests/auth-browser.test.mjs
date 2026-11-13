@@ -114,11 +114,11 @@ test('temporary session forces password change and rejects mismatch before unloc
     await page.goto(origin + '/en/strategies/alpha'); await signIn(page);
     await page.getByRole('heading', { name: 'Change your password' }).waitFor();
     assert.equal(state.protectedRequests, 0);
-    await page.getByLabel('New password', { exact: true }).fill('a new secure passphrase!');
+    await page.getByLabel('New password', { exact: true }).fill('1234567');
     await page.getByLabel('Confirm new password', { exact: true }).fill('different passphrase!');
     await page.getByRole('button', { name: 'Save new password' }).click();
     await page.getByRole('alert').filter({ hasText: 'Passwords do not match' }).waitFor();
-    await page.getByLabel('Confirm new password', { exact: true }).fill('a new secure passphrase!');
+    await page.getByLabel('Confirm new password', { exact: true }).fill('1234567');
     const historyResponse = page.waitForResponse(response => response.url().includes('/explorer/history'));
     await page.getByRole('button', { name: 'Save new password' }).click();
     await historyResponse; await page.getByPlaceholder('Search history...').waitFor(); assert.ok(state.protectedRequests > 0);

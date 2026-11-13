@@ -72,7 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
         setForm((result.user as unknown as AuthUser).mustChangePassword ? 'password' : null);
       } else {
         const newPassword = String(data.get('newPassword'));
-        if (newPassword.length < 14 || new TextEncoder().encode(newPassword).length > 256) throw new Error('Use at least 14 characters and at most 256 bytes.');
+        if (newPassword.length < 7 || new TextEncoder().encode(newPassword).length > 256) throw new Error('Use at least 7 characters and at most 256 bytes.');
         if (newPassword !== data.get('confirmPassword')) throw new Error('Passwords do not match');
         const result = await authRequest('/api/auth/change-password', { newPassword, ...(state.user?.mustChangePassword ? {} : { currentPassword: data.get('currentPassword') }) }, state.csrfToken);
         apply({ ...current.current, user: result.user as unknown as AuthUser, csrfToken: result.csrfToken as string }); setForm(null);
@@ -86,16 +86,18 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     {error && !form ? <p role="alert" className="fixed bottom-4 left-4 z-[100] rounded-lg bg-slate-900 p-4 text-amber-100">{error}</p> : null}
     {form ? <dialog ref={dialog} onCancel={event => { if (state.user?.mustChangePassword || busy) event.preventDefault(); else setForm(null); }} className="w-[min(92vw,420px)] rounded-2xl border border-white/20 bg-slate-900 p-6 text-white backdrop:bg-black/70" aria-labelledby="auth-title">
       <h2 id="auth-title" className="mb-5 text-xl">{form === 'login' ? 'Log in' : 'Change your password'}</h2>
-      {!safeTransport ? <p role="alert">Secure HTTPS is required before signing in.</p> : <form key={form + String(state.user?.mustChangePassword)} onSubmit={event => { void submit(event); }} className="space-y-4">
+      {!safeTransport ? <p role="alert">Secure HTTPS is required before signing in.</p> : <form id="auth-form" key={form + String(state.user?.mustChangePassword)} onSubmit={event => { void submit(event); }} className="space-y-4">
         {form === 'login' ? <><label className="block">Username<input name="username" autoComplete="username" required maxLength={64} autoFocus className={authInput} /></label><label className="block">Password<input name="password" type="password" autoComplete="current-password" required maxLength={256} className={authInput} /></label></> : <>
           {!state.user?.mustChangePassword ? <label className="block">Current password<input name="currentPassword" type="password" autoComplete="current-password" required className={authInput} /></label> : <p>Choose a new password to unlock financial data.</p>}
-          <label className="block">New password<input name="newPassword" type="password" autoComplete="new-password" required minLength={14} maxLength={256} autoFocus className={authInput} /></label>
-          <label className="block">Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" required minLength={14} maxLength={256} className={authInput} /></label><p className="text-xs text-slate-400">At least 14 characters; use a unique passphrase.</p>
+          <label className="block">New password<input name="newPassword" type="password" autoComplete="new-password" required minLength={7} maxLength={256} autoFocus className={authInput} /></label>
+          <label className="block">Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" required minLength={7} maxLength={256} className={authInput} /></label><p className="text-xs text-slate-400">At least 7 characters.</p>
         </>}
         {error ? <p role="alert" className="text-amber-200">{error}</p> : null}
-        <button disabled={busy} className={authButton}>{busy ? 'Saving…' : form === 'login' ? 'Log in' : 'Save new password'}</button>
       </form>}
-      <button disabled={busy} type="button" className={`${authButton} mt-4`} onClick={() => { if (state.user?.mustChangePassword) void logout(); else setForm(null); }}>{state.user?.mustChangePassword ? 'Log out / Continue as Guest' : 'Cancel / Continue as Guest'}</button>
+      <div className="mt-5 flex items-stretch gap-3">
+        {safeTransport ? <button disabled={busy} type="submit" form="auth-form" className="min-w-0 flex-1 rounded-lg border border-cyan-300 bg-cyan-300 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:border-cyan-200 hover:bg-cyan-200 disabled:opacity-50">{busy ? 'Saving…' : form === 'login' ? 'Log in' : 'Save new password'}</button> : null}
+        <button disabled={busy} type="button" className={`${authButton} min-w-0 flex-1`} onClick={() => { if (state.user?.mustChangePassword) void logout(); else setForm(null); }}>{state.user?.mustChangePassword ? 'Log out / Continue as Guest' : 'Cancel / Continue as Guest'}</button>
+      </div>
     </dialog> : null}
   </Context.Provider>;
 }
