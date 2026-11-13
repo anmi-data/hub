@@ -7,6 +7,7 @@ import type { Confidence, Metric, ReportSection, StrategyReport } from "./types"
 import { useParams } from "react-router-dom";
 import { strategyReports } from "./data";
 import { localizedPath, useLocale } from "../../i18n/locale";
+import { AuthControl } from '../../components/auth/AuthProvider';
 
 const confidenceStyle: Record<Confidence, string> = {
   High: "border-emerald-300/20 bg-emerald-300/10 text-emerald-200",
@@ -27,6 +28,7 @@ function ReportHeader({ report }: { report: StrategyReport }): JSX.Element {
   return (
     <header className="border-b border-white/10 bg-[#07111f]/95 backdrop-blur-xl">
       <div className="mx-auto max-w-[1500px] px-4 py-4 sm:px-6 lg:px-8">
+        <div className="mb-3 flex justify-end"><AuthControl /></div>
         <div className="flex items-center justify-between gap-5">
           <a href={localizedPath(locale)} className="flex items-center gap-3 text-sm text-slate-400 transition hover:text-white">
             <ArrowLeft className="h-4 w-4" />

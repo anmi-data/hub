@@ -1,4 +1,13 @@
 # hub
+
+## Authentication
+
+Visitors begin as Guest. Header login unlocks AUM, financial details and the existing History Explorer after any mandatory password change. Logout/expiry clears memory caches and financial views; the strategy URL is preserved. `/admin` uses a separate administrator session for User creation, disable/enable, password reset, session revocation and audit history. Temporary passwords appear once. There is no signup or public recovery.
+
+See the API repository's `docs/authentication.md` for the complete HTTPS and local administrator deployment runbook. Deploy API and Hub together; production login stays disabled until trusted HTTPS is verified. PostHog consent and event allowlists remain unchanged; no automatic identification is added.
+
+Development defaults to a loopback API proxy at `http://127.0.0.1:3001`. Set API `ANMI_AUTH_ENABLED=true`, `ANMI_AUTH_DEV=true`, and exact `ANMI_AUTH_ORIGIN=http://localhost:5173`, then open that localhost origin. `ANMI_DEV_API_TARGET` may override the proxy with localhost HTTP or HTTPS; insecure remote proxy targets are rejected. Development cookies are forbidden in production.
+
 ANMI helps investors trust trading strategies before allocating capital — with verified track records, risk-first analytics, drawdown visibility, transaction history and investor-ready strategy profiles
 
 ## ANMI Hub Analytics

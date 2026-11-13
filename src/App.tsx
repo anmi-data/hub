@@ -5,6 +5,8 @@ import HomePage from "./pages/home/HomePage";
 import { AnalyticsConsent } from "./components/analytics/AnalyticsConsent";
 import { PageViewTracker } from "./components/analytics/PageViewTracker";
 import { PrivacyPage } from "./pages/PrivacyPage";
+import { AuthProvider, useAuth } from './components/auth/AuthProvider';
+import { AdminPage } from './pages/AdminPage';
 
 const StrategiesPage = lazy(async () => {
   const module = await import("./pages/StrategiesPage");
@@ -52,10 +54,12 @@ function LegacyReportRedirect(): JSX.Element {
   );
 }
 
-export default function App(): JSX.Element {
+function ApplicationRoutes(): JSX.Element {
+  const { epoch } = useAuth();
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
-      <Routes>
+      <Routes key={epoch}>
+        <Route path="/admin" element={<AdminPage />} />
         <Route path="/privacy" element={<><PageViewTracker /><PrivacyPage /></>} />
         <Route path="/" element={<Navigate to={localizedPath(DEFAULT_LOCALE)} replace />} />
         <Route path="/strategies" element={<LegacyStrategyRedirect />} />
@@ -74,4 +78,7 @@ export default function App(): JSX.Element {
       <AnalyticsConsent />
     </BrowserRouter>
   );
+}
+export default function App(): JSX.Element {
+  return <AuthProvider><ApplicationRoutes /></AuthProvider>;
 }

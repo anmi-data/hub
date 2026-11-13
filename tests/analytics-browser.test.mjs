@@ -46,6 +46,7 @@ async function fixture({ mock = true, mobile = false, saved } = {}) {
   await context.route("**/api/**", async route => {
     const url = new URL(route.request().url());
     let payload = {};
+    if (url.pathname === "/api/auth/me") payload = { user: { id: 1, username: "analytics-fixture", mustChangePassword: false }, admin: false, csrfToken: "fixture-csrf", adminCsrfToken: null };
     if (url.pathname.endsWith("/data-revision")) payload = { dataRevision: 1 };
     if (url.pathname.endsWith("/display/strategies")) payload = { strategies: [
       { id: "alpha", groupId: "public-alpha", name: "Alpha", status: "complete" },

@@ -2,6 +2,7 @@ import anmiLogo from "../assets/anmi_logo_header.webp";
 import { homeNavigation, socialLinks } from "../data/homeNavigation";
 import { localizedPath, useLocale } from "../../../i18n/locale";
 import { trackEvent } from "../../../lib/analytics";
+import { AuthControl } from '../../../components/auth/AuthProvider';
 
 export function Header(): JSX.Element {
   const locale = useLocale();
@@ -20,6 +21,7 @@ export function Header(): JSX.Element {
           </div>
         </div>
       </a>
+      <AuthControl />
       <div className="hidden items-center gap-6 md:flex">
         <nav className="flex items-center gap-7 text-sm text-slate-400">
           {homeNavigation.map((item) => (

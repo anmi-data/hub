@@ -11,6 +11,8 @@ import { getAnalyticsConsent, trackEvent } from "../lib/analytics";
 import { explorerProperties, safeDataset, searchLengthBucket } from "../lib/analytics-events";
 import { useExplorerVisibility } from "../components/analytics/useExplorerVisibility";
 import { createRequestCache } from "../lib/request-cache";
+import { AuthControl, LockedPanel, ProtectedValue, useAuth } from '../components/auth/AuthProvider';
+import { authGeneration, registerPrivateCache, sessionRejected } from '../lib/auth-client';
 
 type StrategySummary = {
   id: string;
@@ -1902,8 +1904,10 @@ class ApiRequestError extends Error {
 }
 
 const apiResponseCache = createRequestCache(Infinity, 500);
+registerPrivateCache(() => apiResponseCache.clear());
 
 function fetchJson(url: string, locale?: Locale): Promise<unknown> {
+  const generation = authGeneration();
   const requestUrl = locale ? localizedApiUrl(url, locale) : url;
   return apiResponseCache.get(requestUrl, async () => {
   const response = await fetch(requestUrl, {
@@ -1911,13 +1915,16 @@ function fetchJson(url: string, locale?: Locale): Promise<unknown> {
     headers: locale ? { "Accept-Language": locale } : undefined,
   });
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) sessionRejected();
     const errorPayload = await response.json().catch((): null => null);
     const responseMessage = isRecord(errorPayload)
       ? asString(errorPayload.message) ?? asString(errorPayload.error) ?? null
       : null;
     throw new ApiRequestError(response.status, responseMessage);
   }
-  return response.json() as Promise<unknown>;
+  const payload: unknown = await response.json();
+  if (generation !== authGeneration()) throw new Error('Session changed');
+  return payload;
   });
 }
 
@@ -2433,7 +2440,7 @@ function MetricsTable({
               <tr key={metric.label} title={metric.hint} className="border-b border-white/10 last:border-b-0">
                 <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">{metric.label}</td>
                 <td className={cn("px-3 py-2.5 text-right font-semibold tabular-nums text-white", metric.valueClassName)}>
-                  {metric.value}
+                  {metric.label === 'AUM' ? <ProtectedValue>{metric.value}</ProtectedValue> : metric.value}
                 </td>
               </tr>
             ))}
@@ -2670,6 +2677,7 @@ function ExposureMixBar({ items }: { items: ExposureMixItem[] }): JSX.Element | 
 }
 
 export function StrategiesPage(): JSX.Element {
+  const auth = useAuth();
   const { strategyId } = useParams<{ strategyId: string }>();
   const navigate = useNavigate();
   const locale = useLocale();
@@ -2713,7 +2721,7 @@ export function StrategiesPage(): JSX.Element {
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [assetDeltasError, setAssetDeltasError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [chartMode, setChartMode] = useState<ChartMode>(() => readSavedChartMode());
+  const [chartMode, setChartMode] = useState<ChartMode>(() => auth.canViewFinancial ? readSavedChartMode() : 'unit_price');
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
   const [isBenchmarkMenuOpen, setIsBenchmarkMenuOpen] = useState(false);
   const [strategySearch, setStrategySearch] = useState("");
@@ -2859,11 +2867,11 @@ export function StrategiesPage(): JSX.Element {
       };
     });
     const metrics: Metric[] = [
-      { label: "AUM", value: formatUsdOrNA(source?.navUsd), hint: "Total assets under management" },
+      { label: "AUM", value: auth.canViewFinancial ? formatUsdOrNA(source?.navUsd) : '🔒 Log in to view', hint: "Total assets under management" },
       {
         label: "Net Return",
         value: formatPercentPointsOrDash(headerStrategy?.netReturnPct),
-        hint: `Net profit ${formatSignedUsdOrNA(headerStrategy?.netReturnUsd ?? null)} / current AUM. Deposits and withdrawals excluded from profit.`,
+        hint: auth.canViewFinancial ? `Net profit ${formatSignedUsdOrNA(headerStrategy?.netReturnUsd ?? null)} / current AUM. Deposits and withdrawals excluded from profit.` : 'Net return as a percentage. Deposits and withdrawals excluded from profit.',
       },
       ...contractMetrics,
       { label: "Max Drawdown", value: formatPercentOrNA(headerStrategy?.maxDrawdown ?? selectedStrategy?.maxDrawdown), hint: "Maximum drawdown" },
@@ -2886,7 +2894,7 @@ export function StrategiesPage(): JSX.Element {
     }
 
     return metrics;
-  }, [headerStrategy, isLoadingHeader, selectedStrategy]);
+  }, [auth.canViewFinancial, headerStrategy, isLoadingHeader, selectedStrategy]);
   const dataQualityWarnings = isStrategyGroupDataQuality(headerStrategy?.dataQuality)
     ? headerStrategy.dataQuality.warnings
     : [];
@@ -3161,15 +3169,9 @@ export function StrategiesPage(): JSX.Element {
     setHistoryData(createEmptyHistory(1, historyPageSize));
     setSelectedDataset(getDefaultDatasetForNode(selectedTreeNode));
     const detailsUrl = buildExplorerDetailsUrl("/api/v1", selectedStrategy.groupId, selectedTreeNode);
-    if (import.meta.env.DEV) {
-      console.debug("Explorer details request", { node: selectedTreeNode, url: detailsUrl });
-    }
     fetchJson(detailsUrl, locale)
       .then((payload) => {
         if (!active) return;
-        if (import.meta.env.DEV) {
-          console.debug("Explorer details raw response", payload);
-        }
         const details = normalizeDetails(payload, locale, selectedTreeNode);
         setNodeDetails(details);
       })
@@ -3191,7 +3193,7 @@ export function StrategiesPage(): JSX.Element {
 
   useEffect(() => {
     const url = buildAssetDeltasUrl(selectedTreeNode);
-    if (url === null) {
+    if (url === null || !auth.canViewFinancial) {
       setAssetDeltas(null);
       setAssetDeltasError(null);
       setIsLoadingAssetDeltas(false);
@@ -3226,10 +3228,10 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [historyRefresh, locale, selectedTreeNode]);
+  }, [auth.canViewFinancial, historyRefresh, locale, selectedTreeNode]);
 
   useEffect(() => {
-    if (!selectedStrategy || !selectedTreeNode || !selectedDataset) return;
+    if (!auth.canViewFinancial || !selectedStrategy || !selectedTreeNode || !selectedDataset) return;
     let active = true;
     setIsLoadingHistory(true);
     setHistoryError(null);
@@ -3242,15 +3244,9 @@ export function StrategiesPage(): JSX.Element {
       historyPageSize,
       historySearch,
     );
-    if (import.meta.env.DEV) {
-      console.debug("Explorer history request", { node: selectedTreeNode, dataset: selectedDataset, url: historyUrl });
-    }
     fetchJson(historyUrl, locale)
       .then((payload) => {
         if (!active) return;
-        if (import.meta.env.DEV) {
-          console.debug("Explorer history raw response", payload);
-        }
         setHistoryData(normalizeHistory(payload, historyPage, historyPageSize, historySearch, locale));
       })
       .catch(() => {
@@ -3266,7 +3262,7 @@ export function StrategiesPage(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [historyPage, historyPageSize, historySearch, historyRefresh, locale, selectedDataset, selectedStrategy, selectedTreeNode]);
+  }, [auth.canViewFinancial, historyPage, historyPageSize, historySearch, historyRefresh, locale, selectedDataset, selectedStrategy, selectedTreeNode]);
 
   useEffect(() => {
     let active = true;
@@ -3389,7 +3385,7 @@ export function StrategiesPage(): JSX.Element {
   }
 
   function prefetchExplorerNode(node: ExplorerTreeNode): void {
-    if (!selectedStrategy) return;
+    if (!selectedStrategy || !auth.canViewFinancial) return;
     // Warm only the intended node, rather than fan out over every account.
     const urls = [
       buildExplorerDetailsUrl("/api/v1", selectedStrategy.groupId, node),
@@ -3409,6 +3405,7 @@ export function StrategiesPage(): JSX.Element {
 
       <header className="relative z-50 border-b border-white/10 bg-[#07111f]/90 backdrop-blur-xl">
         <div className="relative z-40 mx-auto max-w-7xl px-5 py-6 lg:px-8">
+          <div className="mb-3 flex justify-end"><AuthControl /></div>
           <div className="flex items-start gap-5">
             <div className="flex min-w-0 flex-1 flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 flex-1 items-start gap-6">
@@ -3515,13 +3512,15 @@ export function StrategiesPage(): JSX.Element {
                   <div className="inline-flex items-center text-sm font-medium">
                     <button
                       type="button"
-                      onClick={() => handleChartModeChange("nav_usd")}
+                      onClick={() => { if (auth.canViewFinancial) handleChartModeChange('nav_usd'); else auth.openLogin(); }}
+                      aria-label={auth.canViewFinancial ? 'AUM' : 'AUM locked. Log in to view'}
+                      title={auth.canViewFinancial ? 'AUM' : 'AUM is available to registered users. Log in to view.'}
                       className={cn(
                         "px-1 py-0.5 text-sm transition",
                         chartMode === "nav_usd" ? "text-cyan-100" : "text-slate-500 hover:text-slate-200",
                       )}
                     >
-                      AUM
+                      AUM {auth.canViewFinancial ? null : '🔒'}
                     </button>
                     <span className="mx-2 h-4 w-px bg-white/10" />
                     <button
@@ -3998,6 +3997,7 @@ function DataExplorer({
 }): JSX.Element {
   const locale = useLocale();
   const flatNodes = useMemo(() => flattenExplorerNodes(nodes), [nodes]);
+  const auth = useAuth();
   const visibilityRef = useExplorerVisibility();
   const datasetLabel = selectedDataset ? formatDatasetLabel(selectedDataset) : "selected dataset";
   const canGoBack = hasPreviousHistoryPage;
@@ -4050,7 +4050,8 @@ function DataExplorer({
               Latest verified values for the selected element.
             </div>
             <NodeMetricsTable metrics={currentNodeMetrics} />
-            {selectedNode?.type === "strategy_group" || selectedNode?.type === "strategy" ? (
+            {!auth.canViewFinancial ? <LockedPanel>Financial details are available to registered users.</LockedPanel> : null}
+            {auth.canViewFinancial && (selectedNode?.type === "strategy_group" || selectedNode?.type === "strategy") ? (
               <AssetDeltasTable data={assetDeltas} error={assetDeltasError} isLoading={isLoadingAssetDeltas} />
             ) : null}
           </div>
@@ -4063,6 +4064,7 @@ function DataExplorer({
         </aside>
 
         <section className="min-w-0 rounded-xl border border-white/10 bg-white/[0.025] p-4">
+          {!auth.canViewFinancial ? <><div className="text-sm font-semibold text-white">Historical records</div><LockedPanel>Historical records are available to registered users.</LockedPanel></> : <>
           <div className="mb-4 flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-white">Historical records</div>
@@ -4117,6 +4119,7 @@ function DataExplorer({
           {historyError ? <div className="text-sm text-amber-100">{historyError}</div> : null}
           {!isLoadingHistory && !historyError && historyRows.length === 0 ? <div className="text-sm text-slate-500">No history records found for {datasetLabel}</div> : null}
           {historyRows.length > 0 ? <HistoryTable rows={historyRows} columns={historyColumns} showMessageColumn={hasHistoryMessageColumn} /> : null}
+          </>}
         </section>
       </div>
     </section>
