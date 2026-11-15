@@ -2420,6 +2420,8 @@ function buildChartView({
   };
 }
 
+const KEY_STRATEGY_METRIC_LABELS = ["All-time APY", "1 day VaR (95%)", "Max Drawdown", "Volatility", "Sharpe ratio", "Sortino ratio"] as const;
+
 function MetricsTable({
   metrics,
   subtitle = "Collected and verified by ANMI Track",
@@ -2429,16 +2431,32 @@ function MetricsTable({
   subtitle?: string;
   title?: string;
 }): JSX.Element {
+  const keyMetrics = KEY_STRATEGY_METRIC_LABELS.flatMap(label => metrics.filter(metric => metric.label === label));
+  const otherMetrics = metrics.filter(metric => !keyMetrics.includes(metric));
   return (
     <aside className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 shadow-2xl shadow-slate-950/20">
       <div className="mb-3">
         <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">{title}</div>
         <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
       </div>
-      <div className="overflow-hidden rounded-xl border border-white/10">
+      <div className="overflow-hidden rounded-xl border border-cyan-200/20 bg-cyan-200/[0.04]">
+        <table aria-label="Key strategy metrics" className="w-full text-sm">
+          <tbody>
+            {keyMetrics.map(metric => (
+              <tr key={metric.label} title={metric.hint} className="border-b border-cyan-200/10 last:border-b-0">
+                <th scope="row" className="px-3 py-3 text-left text-xs font-medium text-slate-200">{metric.label}</th>
+                <td className={cn("px-3 py-3 text-right text-xl font-semibold tabular-nums text-white", metric.valueClassName)}>{metric.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {otherMetrics.length > 0 ? <details className="mt-4">
+        <summary className="cursor-pointer text-xs font-medium text-slate-400 transition hover:text-slate-200">More metrics</summary>
+      <div className="mt-3 overflow-hidden rounded-xl border border-white/10">
         <table className="w-full text-sm">
           <tbody>
-            {metrics.map((metric) => (
+            {otherMetrics.map((metric) => (
               <tr key={metric.label} title={metric.hint} className="border-b border-white/10 last:border-b-0">
                 <td className="px-3 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">{metric.label}</td>
                 <td className={cn("px-3 py-2.5 text-right font-semibold tabular-nums text-white", metric.valueClassName)}>
@@ -2449,6 +2467,7 @@ function MetricsTable({
           </tbody>
         </table>
       </div>
+      </details> : null}
     </aside>
   );
 }
