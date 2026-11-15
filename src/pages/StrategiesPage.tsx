@@ -2440,12 +2440,16 @@ function MetricsTable({
         <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
       </div>
       <div className="overflow-hidden rounded-xl border border-cyan-200/20 bg-cyan-200/[0.04]">
-        <table aria-label="Key strategy metrics" className="w-full text-sm">
+        <table aria-label="Key strategy metrics" className="w-full table-fixed text-sm">
           <tbody>
-            {keyMetrics.map(metric => (
-              <tr key={metric.label} title={metric.hint} className="border-b border-cyan-200/10 last:border-b-0">
-                <th scope="row" className="px-3 py-3 text-left text-xs font-medium text-slate-200">{metric.label}</th>
-                <td className={cn("px-3 py-3 text-right text-xl font-semibold tabular-nums text-white", metric.valueClassName)}>{metric.value}</td>
+            {Array.from({ length: Math.ceil(keyMetrics.length / 2) }, (_, row) => (
+              <tr key={row} className="border-b border-cyan-200/10 last:border-b-0">
+                {keyMetrics.slice(row * 2, row * 2 + 2).map(metric => (
+                  <td key={metric.label} title={metric.hint} className="border-r border-cyan-200/10 px-3 py-3 align-top last:border-r-0">
+                    <div className="text-[11px] font-medium text-slate-300">{metric.label}</div>
+                    <div className={cn("mt-1 text-xl font-semibold tabular-nums text-white", metric.valueClassName)}>{metric.value}</div>
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>

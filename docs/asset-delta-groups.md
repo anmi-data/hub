@@ -7,9 +7,9 @@ USD-delta order is preserved, with unavailable USD values last.
 
 Classification uses the API's canonical `assetSymbol`:
 
-- Oil: CL, BZ.
+- Oil: CL, BZ, HO (diesel/heating oil futures).
 - Gold: XAU, XAUT, PAXG.
-- Stock market: SPX, NDX, MSFT, MSTR, QQQ, SPY, SKHYNIX, TSLA, WDC
+- Stock market: SPX, NDX, MSFT, MSTR, NVDA, QQQ, SPY, SKHYNIX, TSLA, WDC
   (the equities, ETFs and indices in Track's asset configuration).
 - Top20 Crypto: the fixed selection below.
 - Altcoins: remaining crypto symbols.
@@ -17,7 +17,7 @@ Classification uses the API's canonical `assetSymbol`:
 XAG (silver) and EURUSD (FX) appear in an additional Other assets group when
 present, so they are not classified as gold or altcoins. New non-crypto
 instruments require an explicit classification in `src/pages/assetDeltaGroups.ts`.
-The API already groups supported USD stablecoins as USD and normalizes supported
+The API groups supported USD stablecoins, including JUPUSD, as USD and normalizes supported
 wrappers to their underlying assets; this display grouping does not duplicate
 that normalization, change financial values, or sum unlike asset quantities.
 

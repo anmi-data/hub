@@ -8,11 +8,11 @@ const top20CryptoSymbols = new Set([
   "DOGE", "LINK", "XMR", "WBT", "ADA", "LEO", "RAIN", "XLM",
 ]);
 
-const oilSymbols = new Set(["CL", "BZ"]);
+const oilSymbols = new Set(["CL", "BZ", "HO"]);
 const goldSymbols = new Set(["XAU", "XAUT", "PAXG"]);
 // Canonical equities, ETFs and indices configured in Track's asset registry.
 const stockMarketSymbols = new Set([
-  "SPX", "NDX", "MSFT", "MSTR", "QQQ", "SPY", "SKHYNIX", "TSLA", "WDC",
+  "SPX", "NDX", "MSFT", "MSTR", "NVDA", "QQQ", "SPY", "SKHYNIX", "TSLA", "WDC",
 ]);
 // Known non-crypto assets must not be mislabeled as altcoins.
 const otherAssetSymbols = new Set(["XAG", "EURUSD"]);
