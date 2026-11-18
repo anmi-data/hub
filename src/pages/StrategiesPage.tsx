@@ -214,6 +214,9 @@ type AdvancedMetricsResponse = {
   window: AdvancedMetricsWindow;
   timestamp: string | null;
   observations: number;
+  tStatistic: number | null;
+  tStatisticObservations: number;
+  betas: Array<{ symbol: string; beta: number | null; observations: number }>;
   correlations: AdvancedMarketCorrelation[];
   autocorrelations: AdvancedReturnAutocorrelation[];
   optimalFUncapped: number | null;
@@ -302,6 +305,7 @@ type Metric = {
   label: string;
   value: string;
   hint?: string;
+  detail?: string;
   valueClassName?: string;
 };
 
@@ -2035,6 +2039,12 @@ function normalizeAdvancedMetrics(payload: unknown): AdvancedMetricsResponse | n
     window,
     timestamp: asString(payload.timestamp) ?? null,
     observations: Math.max(0, Math.trunc(asNumber(payload.observations) ?? 0)),
+    tStatistic: nullableNumber(payload.tStatistic),
+    tStatisticObservations: Math.max(0, Math.trunc(asNumber(payload.tStatisticObservations) ?? 0)),
+    betas: (Array.isArray(payload.betas) ? payload.betas : []).flatMap((item) => {
+      if (!isRecord(item) || typeof item.symbol !== "string") return [];
+      return [{ symbol: item.symbol, beta: nullableNumber(item.beta), observations: Math.max(0, Math.trunc(asNumber(item.observations) ?? 0)) }];
+    }),
     correlations,
     autocorrelations,
     optimalFUncapped: nullableNumber(payload.optimalFUncapped ?? payload.optimalF),
@@ -2420,7 +2430,7 @@ function buildChartView({
   };
 }
 
-const KEY_STRATEGY_METRIC_LABELS = ["All-time APY", "1 day VaR (95%)", "Max Drawdown", "Volatility", "Sharpe ratio", "Sortino ratio"] as const;
+const KEY_STRATEGY_METRIC_LABELS = ["All-time APY", "1 day VaR (95%)", "Max Drawdown", "Volatility", "Sharpe ratio", "Sortino ratio", "T-statistic", "Beta"] as const;
 
 function MetricsTable({
   metrics,
@@ -2446,7 +2456,7 @@ function MetricsTable({
               <tr key={row} className="border-b border-cyan-200/10 last:border-b-0">
                 {keyMetrics.slice(row * 2, row * 2 + 2).map(metric => (
                   <td key={metric.label} title={metric.hint} className="border-r border-cyan-200/10 px-3 py-3 align-top last:border-r-0">
-                    <div className="text-[11px] font-medium text-slate-300">{metric.label}</div>
+                    <div className="text-[11px] font-medium text-slate-300">{metric.label}{metric.detail ? <span className="ml-2 text-slate-400">{metric.detail}</span> : null}</div>
                     <div className={cn("mt-1 text-xl font-semibold tabular-nums text-white", metric.valueClassName)}>{metric.value}</div>
                   </td>
                 ))}
@@ -2891,7 +2901,11 @@ export function StrategiesPage(): JSX.Element {
         valueClassName: column.valueClassName(value),
       };
     });
+    const matchingAdvancedMetrics = advancedMetrics && advancedMetrics.id === selectedStrategy?.groupId && advancedMetrics.window === advancedMetricsWindow ? advancedMetrics : null;
+    const selectedBeta = matchingAdvancedMetrics?.betas.find((metric) => metric.symbol === selectedBenchmark);
     const metrics: Metric[] = [
+      { label: "T-statistic", detail: advancedMetricsWindow, value: isLoadingAdvancedMetrics ? "Loading..." : formatNumberOrNA(matchingAdvancedMetrics?.tStatistic, 2), hint: `${advancedMetricsWindow}: mean daily unit-price return / (sample standard deviation / sqrt(n)); n=${matchingAdvancedMetrics?.tStatisticObservations ?? 0}. Conventional standard error, without autocorrelation correction. Missing days excluded.` },
+      { label: "Beta", detail: `${selectedBenchmark ?? "No benchmark"} / ${advancedMetricsWindow}`, value: isLoadingAdvancedMetrics ? "Loading..." : formatNumberOrNA(selectedBeta?.beta, 2), hint: selectedBenchmark ? `${advancedMetricsWindow} vs ${selectedBenchmark}: covariance / benchmark variance over ${selectedBeta?.observations ?? 0} matched return intervals.` : "Select a benchmark to see beta." },
       { label: "AUM", value: auth.canViewFinancial ? formatUsdOrNA(source?.navUsd) : '🔒 Log in to view', hint: "Total assets under management" },
       {
         label: "Net Return",
@@ -2919,7 +2933,7 @@ export function StrategiesPage(): JSX.Element {
     }
 
     return metrics;
-  }, [auth.canViewFinancial, headerStrategy, isLoadingHeader, selectedStrategy]);
+  }, [auth.canViewFinancial, headerStrategy, isLoadingHeader, selectedStrategy, advancedMetrics, advancedMetricsWindow, isLoadingAdvancedMetrics, selectedBenchmark]);
   const dataQualityWarnings = isStrategyGroupDataQuality(headerStrategy?.dataQuality)
     ? headerStrategy.dataQuality.warnings
     : [];

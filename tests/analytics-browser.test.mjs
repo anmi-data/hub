@@ -255,3 +255,37 @@ test("browser: unavailable localStorage and blocked SDK leave navigation usable"
     assert.equal(await page.getByRole("button", { name: "Accept analytics", exact: true }).count(), 0);
   } finally { await context.close(); }
 });
+
+
+test("browser: group key metrics show t-statistic and beta for the selected benchmark and window", async () => {
+  const { context, page } = await fixture({ saved: "rejected" });
+  await context.route("**/advanced-metrics?**", route => {
+    const window = new URL(route.request().url()).searchParams.get("window");
+    return route.fulfill({ json: {
+      id: "public-alpha", scopeType: "strategy_group", window, observations: 60,
+      tStatistic: window === "30d" ? 1.25 : 2.5, tStatisticObservations: 60,
+      betas: [{ symbol: "BTC", beta: 0.75, observations: 60 }, { symbol: "ETH", beta: window === "30d" ? null : -0.25, observations: 55 }],
+      correlations: [], autocorrelations: [], warnings: []
+    } });
+  });
+  try {
+    await page.goto(origin + "/en/strategies/alpha");
+    const metrics = page.getByRole("table", { name: "Key strategy metrics" });
+    await page.waitForFunction(() => document.querySelector('[aria-label="Key strategy metrics"]')?.textContent.includes("2.5"));
+    assert.match(await metrics.textContent(), /T-statistic.*90d.*2\.5/s);
+    await page.getByRole("button", { name: /Benchmark/ }).click();
+    await page.getByRole("button", { name: /Bitcoin|BTC/ }).last().click();
+    assert.match(await metrics.textContent(), /Beta.*BTC.*0\.75/s);
+    await page.getByRole("button", { name: /Benchmark/ }).click();
+    await page.getByRole("button", { name: /Ethereum|ETH/ }).last().click();
+    assert.match(await metrics.textContent(), /Beta.*ETH.*-0\.25/s);
+    await page.getByRole("button", { name: "30d", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Key strategy metrics"]')?.textContent.includes("1.25"));
+    assert.match(await metrics.textContent(), /T-statistic.*30d.*1\.25/s);
+    assert.match(await metrics.textContent(), /Beta.*ETH.*N\/A/s);
+    await page.getByRole("button", { name: /Benchmark/ }).click();
+    await page.getByRole("button", { name: /^None/ }).click();
+    assert.match(await metrics.textContent(), /Beta.*No benchmark/s);
+    assert.ok(!(await metrics.textContent()).includes("-0.25"));
+  } finally { await context.close(); }
+});
