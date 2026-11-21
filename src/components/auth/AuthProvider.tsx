@@ -95,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
         {error ? <p role="alert" className="text-amber-200">{error}</p> : null}
       </form>}
       <div className="mt-5 flex items-stretch gap-3">
-        {safeTransport ? <button disabled={busy} type="submit" form="auth-form" className="min-w-0 flex-1 rounded-lg border border-cyan-300 bg-cyan-300 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:border-cyan-200 hover:bg-cyan-200 disabled:opacity-50">{busy ? 'Saving…' : form === 'login' ? 'Log in' : 'Save new password'}</button> : null}
+        {safeTransport ? <button disabled={busy} type="submit" form="auth-form" className="min-w-0 flex-1 rounded-lg border border-cyan-300 bg-cyan-300 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:border-cyan-200 hover:bg-cyan-200 disabled:opacity-50">{busy ? form === 'login' ? 'Signing in…' : 'Saving…' : form === 'login' ? 'Log in' : 'Save new password'}</button> : null}
         <button disabled={busy} type="button" className={`${authButton} min-w-0 flex-1`} onClick={() => { if (state.user?.mustChangePassword) void logout(); else setForm(null); }}>{state.user?.mustChangePassword ? 'Log out' : 'Cancel'}</button>
       </div>
     </dialog> : null}
